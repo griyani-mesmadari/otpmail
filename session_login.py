@@ -63,7 +63,7 @@ async def run_login_helper():
             current_url = page.url
             
             # Check smailpro state if on smailpro page
-            if "smailpro.com" in current_url:
+            if "smailpro.com" in current_url and "/login" not in current_url:
                 status = await page.evaluate('''() => {
                     const app = document.querySelector('[x-data]');
                     if (app && app._x_dataStack) {
@@ -80,26 +80,22 @@ async def run_login_helper():
                     return { isLoggedIn: false, isPremium: false };
                 }''')
                 
-                # Check cookies for login token
-                cookies = await context.cookies()
-                cookie_names = [c["name"] for c in cookies]
-                
-                # If logged in flag is true or user is back on smailpro with session
-                if status.get("isLoggedIn") or status.get("isPremium") or any("remember" in n or "token" in n.lower() or "auth" in n.lower() for n in cookie_names):
-                    print(f"\n🎉 LOGIN BERHASIL TERDETEKSI!")
+                # If logged in flag is true on smailpro.com
+                if status.get("isLoggedIn") or status.get("isPremium"):
+                    print(f"\n🎉 LOGIN SMAILPRO BERHASIL TERDETEKSI!")
                     print(f"URL Saat ini : {current_url}")
                     print(f"Status Akun  : LoggedIn={status.get('isLoggedIn')}, Premium={status.get('isPremium')}")
                     logged_in = True
                     break
 
-            # Also check if user navigated past my.sonjj.com login
+            # If user logged in on my.sonjj.com and redirected to dashboard or home
             elif "my.sonjj.com" in current_url and "/login" not in current_url:
                 print(f"\n🎉 LOGIN DI SONJJ BERHASIL!")
                 print(f"URL: {current_url}")
                 # Navigate to temporary email to finalize session
                 print("Mengarahkan browser ke https://smailpro.com/temporary-email ...")
                 await page.goto("https://smailpro.com/temporary-email")
-                await asyncio.sleep(3)
+                await asyncio.sleep(4)
                 logged_in = True
                 break
                 
