@@ -1,8 +1,16 @@
 import asyncio
 import logging
 import re
+import sys
 from datetime import datetime
 from typing import Dict
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from telegram import (
     Update,
