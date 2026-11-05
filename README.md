@@ -1,6 +1,6 @@
 # 🤖 Bot Telegram OTP Email (Gmail & Outlook) — SmailPro Premium
 
-Bot Telegram otomatis untuk penjualan dan penyewaan alamat email sementara (**Gmail & Outlook / Hotmail**) dari **SmailPro Premium**, dilengkapi sistem saldo / top up, approval admin, auto-polling inbox, dan ekstraksi kode OTP otomatis.
+Bot Telegram otomatis untuk penjualan dan penyewaan email sementara (**Gmail & Outlook**) dari **SmailPro Premium**, dilengkapi sistem saldo, approval top up admin, auto-polling inbox, ekstraksi kode OTP otomatis, dan **siap di-deploy 24 jam gratis di Render / GitHub via Docker**.
 
 ---
 
@@ -9,26 +9,26 @@ Bot Telegram otomatis untuk penjualan dan penyewaan alamat email sementara (**Gm
 1. **📧 Pesan OTP Gmail & 📬 Pesan OTP Outlook:**
    - Otomatis membuka `https://smailpro.com/temporary-email` menggunakan sesi akun Premium Anda.
    - Menghasilkan 1 alamat email Gmail atau Outlook baru secara instan.
-   - Mengirimkan alamat email ke pembeli dengan format monospace yang mudah disalin (*1-tap copy*).
+   - Alamat email diformat monospace agar pembeli bisa menyalin dengan 1 klik (*1-tap copy*).
 2. **💰 Sistem Saldo & Pemotongan Adil (Rp 200 / OTP):**
-   - Tiap user memiliki saldo di database SQLite lokal.
-   - **Ketentuan Adil:** Saldo pembeli **HANYA DIPOTONG Rp 200 JIKA KODE OTP / INBOX SUDAH MASUK**.
+   - Saldo pembeli **HANYA DIPOTONG Rp 200 JIKA KODE OTP / INBOX SUDAH MASUK**.
    - Jika belum ada email masuk, saldo tidak akan berkurang sepeserpun.
-   - Minimal saldo untuk memesan adalah Rp 200, dan minimal top up adalah Rp 5.000.
+   - Minimal order adalah Rp 200, dan minimal top up adalah Rp 5.000.
 3. **📩 Request Inbox & Ekstraksi OTP Otomatis:**
-   - Pembeli dapat menekan tombol **`[📩 Cek Inbox / OTP]`**.
-   - Bot membaca isi email dari SmailPro, otomatis mem-parsing pengirim, subjek, serta mengekstrak **kode OTP (4 - 8 digit)** dengan regex cerdas.
-   - Tersedia tombol **`[🔄 Auto Refresh (3 Menit)]`** yang otomatis memeriksa inbox setiap 5 detik tanpa perlu diklik manual berulang kali.
-4. **💳 Top Up Saldo & Notifikasi Bukti Transfer ke Admin:**
-   - Pembeli memilih nominal (Rp 5.000, 10.000, 20.000, 50.000, atau nominal kustom).
-   - Bot menampilkan instruksi pembayaran (QRIS, Dana, GoPay, OVO, Bank Transfer).
-   - Pembeli mengirimkan foto bukti transfer.
-   - Bot meneruskan bukti pembayaran ke Telegram Admin secara otomatis dengan tombol inline interaktif:
-     - `[✅ Terima (Rp X)]` ➡️ Saldo user langsung terisi otomatis dan user mendapat notifikasi.
-     - `[❌ Tolak]` ➡️ Notifikasi penolakan dikirim ke user.
+   - Tombol **`[📩 Cek Inbox / OTP]`** untuk cek manual.
+   - Tombol **`[🔄 Auto Refresh (3 Menit)]`** yang otomatis memantau inbox setiap 5 detik tanpa perlu klik berulang kali.
+   - Regex otomatis mem-parsing pengirim, subjek, dan mengisolasi **kode OTP (4 - 8 digit)**.
+4. **💳 Top Up Saldo & Approval Admin 1-Klik:**
+   - Pilihan nominal cepat (Rp 5.000, 10.000, 20.000, 50.000) atau nominal kustom.
+   - Pengguna transfer dan mengirim foto bukti ke bot.
+   - Admin mendapat notifikasi instan dengan tombol `[✅ Terima (Rp X)]` dan `[❌ Tolak]`. Saldo user otomatis masuk begitu disetujui.
 5. **⚙️ Panel Admin Lengkap:**
-   - Statistik bot: total user, total order, total omset, saldo mengendap, dan status akun Smailpro.
-   - Perintah admin: `/tambahsaldo <user_id> <jumlah>`, `/kurangsaldo`, `/broadcast <pesan>`.
+   - Statistik bot (`/admin`): total user, total order, total omset, saldo mengendap, dan status akun Smailpro.
+   - Perintah admin: `/tambahsaldo`, `/kurangsaldo`, `/broadcast <pesan>`.
+6. **☁️ Siap Deploy 24 Jam Gratis di Render:**
+   - Dilengkapi `Dockerfile` resmi Playwright Chromium (semua library Linux & Chromium sudah terpasang otomatis).
+   - Built-in HTTP Healthcheck endpoint di port `$PORT` agar Render mengenali layanan Web Service.
+   - Tool `export_session.py` untuk memindahkan sesi login Premium ke Render via Environment Variable tanpa membocorkan file rahasia ke GitHub.
 
 ---
 
@@ -36,98 +36,103 @@ Bot Telegram otomatis untuk penjualan dan penyewaan alamat email sementara (**Gm
 
 ```
 BOT OTP EMAIL/
-├── .env.example          # Template konfigurasi environment
-├── .env                  # File konfigurasi bot Anda (buat dari .env.example)
+├── Dockerfile            # Konfigurasi container untuk deploy ke Render (Playwright Pre-installed)
+├── render.yaml           # Blueprint otomatis untuk Render
+├── .gitignore            # Melindungi file .env dan data lokal agar tidak bocor ke GitHub
+├── .env.example          # Template environment variable
 ├── config.py             # Loader konfigurasi
 ├── database.py           # Layer SQLite database (User, Order, Topup, Transaksi)
 ├── smailpro_engine.py    # Mesin Playwright otomatisasi SmailPro Premium
-├── session_login.py      # Script login 1-kali ke akun Smailpro Premium
-├── bot.py                # Kode utama Telegram Bot
+├── session_login.py      # Script login 1-kali ke akun Smailpro Premium (Lokal)
+├── export_session.py     # Script ekspor session ke Base64 untuk disalin ke Render
+├── bot.py                # Kode utama Telegram Bot + HTTP Health Server
 ├── login_smailpro.bat    # Pintasan Windows untuk login Smailpro
-├── start_bot.bat         # Pintasan Windows untuk menjalankan bot
+├── start_bot.bat         # Pintasan Windows untuk menjalankan bot lokal
 ├── requirements.txt      # Dependensi Python
 └── README.md             # Panduan lengkap ini
 ```
 
 ---
 
-## 🚀 Panduan Instalasi & Penggunaan
+## 🚀 PANDUAN DEPLOY KE GITHUB & RENDER (24 JAM GRATIS)
 
-### 1. Buat Bot Telegram & Dapatkan Token
-1. Buka Telegram dan cari **`@BotFather`**.
-2. Kirim perintah `/newbot` dan ikuti petunjuk hingga mendapatkan **BOT_TOKEN**.
-3. Dapatkan Telegram User ID Anda dengan mengirim pesan ke **`@userinfobot`** di Telegram.
-
-### 2. Konfigurasi `.env`
-Salin file `.env.example` menjadi `.env`:
-```powershell
-copy .env.example .env
-```
-Buka file `.env` menggunakan teks editor (Notepad, VSCode), lalu isi data Anda:
-```env
-BOT_TOKEN=7123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-ADMIN_IDS=123456789
-OTP_PRICE=200
-MIN_TOPUP=5000
-
-PAYMENT_DANA=0812-3456-7890 (a.n Nama Anda)
-PAYMENT_GOPAY=0812-3456-7890 (a.n Nama Anda)
-PAYMENT_OVO=0812-3456-7890 (a.n Nama Anda)
-PAYMENT_BANK=BCA: 1234567890 a.n Nama Anda
-PAYMENT_QRIS_URL=https://link-gambar-qris-anda.com/qris.jpg
-
-SMAILPRO_HEADLESS=true
-```
-
-### 3. Login Akun SmailPro Premium (Dilakukan 1x Saja)
-Agar bot dapat memakai akun Smailpro Premium Anda tanpa perlu memasukkan password tiap saat:
-1. Klik ganda file **`login_smailpro.bat`** (atau jalankan `python session_login.py` di terminal).
-2. Sebuah jendela browser Chromium akan terbuka mengarah ke halaman login Smailpro / Sonjj.
-3. Silakan ketik email & kata sandi akun SmailPro Premium Anda, lalu login.
-4. Setelah masuk dan halaman berganti ke `https://smailpro.com/temporary-email` dengan status Premium aktif (ikon petir ⚡), kembali ke terminal dan tekan **ENTER**.
-5. Selesai! Sesi login Anda tersimpan di folder `data/` dan bot siap berjalan di background tanpa membuka jendela browser.
-
-### 4. Menjalankan Bot
-Cukup klik ganda file **`start_bot.bat`** atau jalankan:
-```powershell
-python bot.py
-```
-Bot akan aktif dan langsung melayani user di Telegram!
+### Langkah 1: Login Akun SmailPro di Laptop/PC (1x Saja)
+1. Klik ganda file **`login_smailpro.bat`** (atau jalankan `python session_login.py`).
+2. Jendela browser akan terbuka. Silakan login ke akun SmailPro / Sonjj Premium Anda.
+3. Setelah masuk ke `https://smailpro.com/temporary-email` dan status Premium aktif (ikon petir ⚡), kembali ke terminal dan tekan **ENTER**.
+4. Sesi Anda sekarang sudah tersimpan di folder `data/`.
 
 ---
 
-## 📱 Alur Pemakaian Pengguna
+### Langkah 2: Ambil Kode Sesi untuk Render
+Jalankan script ekspor sesi di terminal:
+```powershell
+python export_session.py
+```
+Script akan menampilkan kode panjang **`SMAILPRO_SESSION_B64`**.
+*Biarkan terminal terbuka atau simpan kode ini di Notepad, karena akan dimasukkan ke Render nanti.*
 
-1. Pengguna membuka bot dan menekan `/start`.
-2. Pengguna menekan **`💰 Top Up Saldo`** jika saldo baru/kurang dari Rp 200.
-3. Pengguna mentransfer minimal Rp 5.000 dan mengirim foto bukti ke bot.
-4. Admin menyetujui bukti transfer dengan 1 kali klik `[✅ Terima]`.
-5. Pengguna menekan **`📧 Pesan OTP Gmail`** atau **`📬 Pesan OTP Outlook`**.
-6. Bot memberikan alamat email sementara:
-   ```
-   ✨ EMAIL GMAIL BERHASIL DIBUAT! ✨
-   📧 Email: random.user123@gmail.com
-   💰 Biaya: Rp 200 (Hanya dipotong saat OTP masuk)
-   ```
-7. Pengguna memasukkan email tersebut ke aplikasi tujuan (misal: WhatsApp, TikTok, Shopee, Netflix, Google, dll).
-8. Pengguna mengklik **`[📩 Cek Inbox / OTP]`** atau mengaktifkan **`[🔄 Auto Refresh]`**.
-9. Saat email verifikasi masuk, bot mengirimkan kode OTP secara instan dan memotong saldo Rp 200:
-   ```
-   🎉 INBOX / KODE OTP BERHASIL DITERIMA! 🎉
-   📧 Email: random.user123@gmail.com
-   📬 Dari: TikTok Verification
-   📌 Subjek: 582910 is your verification code
+---
 
-   🔑 KODE OTP: 👉 582910 👈
+### Langkah 3: Upload Project ke GitHub
 
-   💰 Biaya: Rp 200 (Terpotong)
-   💳 Sisa Saldo Anda: Rp 4.800
+1. Buka [GitHub.com](https://github.com) dan buat repository baru (misal: `bot-otp-email`). Pilih **Private** atau **Public** (Aman karena `.env` dan `data/` sudah otomatis diabaikan oleh `.gitignore`).
+2. Jalankan perintah berikut di terminal folder ini:
+   ```powershell
+   git branch -M main
+   git remote add origin https://github.com/USERNAME-ANDA/bot-otp-email.git
+   git push -u origin main
    ```
+*(Ganti `USERNAME-ANDA` dengan username GitHub Anda).*
+
+---
+
+### Langkah 4: Hubungkan ke Render.com (Gratis)
+
+1. Buka [Render.com](https://render.com) dan login menggunakan akun GitHub Anda.
+2. Di Dashboard Render, klik tombol **New +** ➡️ pilih **Web Service**.
+3. Pilih repository GitHub Anda (`bot-otp-email`) dan klik **Connect**.
+4. Isi pengaturan berikut:
+   * **Name:** `telegram-otp-bot` (bebas)
+   * **Region:** `Singapore` (terdekat dengan Indonesia & latensi tercepat)
+   * **Language / Environment:** Pilih **Docker** *(Render akan otomatis mendeteksi file `Dockerfile`)*
+   * **Instance Type:** Pilih **Free**
+5. Gulir ke bawah ke bagian **Environment Variables**, klik **Add Environment Variable** dan masukkan:
+   * `BOT_TOKEN` : *(Token bot dari @BotFather)*
+   * `ADMIN_IDS` : *(ID Telegram Anda, misal: `12345678`)*
+   * `OTP_PRICE` : `200`
+   * `MIN_TOPUP` : `5000`
+   * `SMAILPRO_HEADLESS` : `true`
+   * `SMAILPRO_SESSION_B64` : *(Paste kode base64 panjang hasil Langkah 2)*
+   * `PAYMENT_DANA` : `0812-3456-7890 (a.n Nama)`
+   * `PAYMENT_GOPAY` : `0812-3456-7890 (a.n Nama)`
+   * `PAYMENT_OVO` : `0812-3456-7890 (a.n Nama)`
+   * `PAYMENT_BANK` : `BCA: 1234567890 a.n Nama`
+6. Klik tombol **Create Web Service**.
+7. Render akan otomatis mem-build Docker container dan menjalankan bot Anda!
+   *Tunggu sekitar 2–3 menit sampai muncul log:*
+   `🚀 BOT TELEGRAM OTP EMAIL AKTIF DAN SIAP DIGUNAKAN!`
+
+---
+
+### Langkah 5: Trik Agar Bot Tidak Tidur / Tetap Aktif 24 Jam Nonstop
+
+Render Free Web Service akan masuk mode *sleep* setelah 15 menit jika tidak ada HTTP request masuk.
+Karena bot ini sudah dilengkapi **Built-in HTTP Healthcheck** di alamat web service Render Anda (contoh: `https://telegram-otp-bot.onrender.com`), Anda dapat membuatnya aktif 24 jam gratis selamanya:
+
+1. Salin URL web service Anda dari Dashboard Render (misal: `https://telegram-otp-bot.onrender.com`).
+2. Buka layanan pemantau gratis seperti [UptimeRobot.com](https://uptimerobot.com) atau [cron-job.org](https://cron-job.org).
+3. Buat **New Monitor**:
+   * **Monitor Type:** `HTTP(s)`
+   * **Friendly Name:** `Bot OTP`
+   * **URL:** `https://telegram-otp-bot.onrender.com`
+   * **Monitoring Interval:** Setiap `5 minutes`
+4. Selesai! UptimeRobot akan mengirim ping setiap 5 menit ke bot Anda, mencegah Render dari mode sleep. Bot Anda sekarang **berjalan 24 jam nonstop 100% gratis**!
 
 ---
 
 ## 🛠️ Perintah Khusus Admin
-- `/admin` : Menampilkan panel statistik omset, total user, total order, dan status sesi SmailPro.
+- `/admin` : Menampilkan ringkasan statistik omset, order, dan status sesi SmailPro.
 - `/tambahsaldo <user_id> <jumlah>` : Menambahkan saldo manual ke pengguna.
 - `/kurangsaldo <user_id> <jumlah>` : Mengurangi saldo manual pengguna.
-- `/broadcast <pesan>` : Mengirimkan pesan pengumuman ke seluruh pengguna bot secara serentak.
+- `/broadcast <pesan>` : Mengirim pengumuman ke seluruh pengguna bot secara serentak.
