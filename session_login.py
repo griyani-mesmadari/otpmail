@@ -17,14 +17,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 async def run_login_helper():
     print("\n" + "=" * 65)
-    print("      🔐 SMAILPRO PREMIUM LOGIN HELPER (AUTO-DETECT)")
+    print("      🔐 SMAILPRO PREMIUM LOGIN HELPER")
     print("=" * 65)
-    print("Memulai browser Chromium...")
-    print(f"Direktori Profil Browser: {config.BROWSER_PROFILE_DIR}\n")
+    print("Membuka browser Chromium di layar Anda...")
+    print(f"Direktori Profil: {config.BROWSER_PROFILE_DIR}\n")
     
     playwright = await async_playwright().start()
     
-    # Launch browser headed on user screen
+    # Launch persistent context headed
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(config.BROWSER_PROFILE_DIR),
         headless=False,
@@ -44,65 +44,81 @@ async def run_login_helper():
     
     print("\n" + "#" * 65)
     print("👉 PETUNJUK:")
-    print("1. Jendela browser Chromium sudah terbuka di layar Anda.")
-    print("2. Silakan login ke akun SmailPro / Sonjj Premium Anda.")
-    print("3. Sistem akan otomatis mendeteksi ketika Anda sudah berhasil login.")
-    print("   (Atau Anda dapat menekan ENTER di terminal ini jika sudah selesai).")
+    print("1. Jendela browser Chromium sudah terbuka.")
+    print("2. Silakan ketik Email & Password akun Smailpro Premium Anda lalu Login.")
+    print("3. Tunggu hingga halaman dialihkan ke https://smailpro.com/temporary-email.")
+    print("4. Setelah berhasil masuk ke dashboard Smailpro:")
+    print("   👉 Tekan tombol ENTER di jendela CMD / terminal ini untuk menyimpan sesi!")
     print("#" * 65 + "\n")
-    print("⏳ Menunggu Anda login di browser (Timeout: 10 menit)...")
     
-    # Auto-detection loop
-    max_seconds = 600
-    start_time = time.time()
-    logged_in = False
-    status = {}
-    
-    while time.time() - start_time < max_seconds:
-        await asyncio.sleep(2)
-        try:
-            current_url = page.url
-            
-            # Check smailpro state if on smailpro page
-            if "smailpro.com" in current_url and "/login" not in current_url:
-                status = await page.evaluate('''() => {
-                    const app = document.querySelector('[x-data]');
-                    if (app && app._x_dataStack) {
-                        for (const d of app._x_dataStack) {
-                            if (typeof d.isLoggedIn !== 'undefined') {
-                                return {
-                                    isLoggedIn: !!d.isLoggedIn,
-                                    isPremium: !!d.isPremium,
-                                    email: d.selectedEmail ? d.selectedEmail.address : null
-                                };
+    # Task 1: Auto-detection in background
+    async def auto_detect():
+        while True:
+            await asyncio.sleep(2)
+            try:
+                curr = page.url
+                if "smailpro.com" in curr and "/login" not in curr:
+                    status = await page.evaluate('''() => {
+                        const app = document.querySelector('[x-data]');
+                        if (app && app._x_dataStack) {
+                            for (const d of app._x_dataStack) {
+                                if (typeof d.isLoggedIn !== 'undefined') {
+                                    return {
+                                        isLoggedIn: !!d.isLoggedIn,
+                                        isPremium: !!d.isPremium
+                                    };
+                                }
                             }
                         }
+                        return { isLoggedIn: false, isPremium: false };
+                    }''')
+                    if status.get("isLoggedIn") or status.get("isPremium"):
+                        print("\n🎉 Auto-detect: Status login Premium terdeteksi aktif!")
+                        return status
+            except Exception:
+                pass
+
+    # Task 2: Wait for user press ENTER
+    async def wait_enter():
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, sys.stdin.readline)
+        print("\nTombol ENTER ditekan oleh pengguna!")
+        return True
+
+    detect_task = asyncio.create_task(auto_detect())
+    enter_task = asyncio.create_task(wait_enter())
+
+    # Wait for either auto-detect or user pressing Enter
+    done, pending = await asyncio.wait(
+        [detect_task, enter_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    for p in pending:
+        p.cancel()
+
+    # Re-check status on page
+    status = {}
+    try:
+        if not page.is_closed():
+            status = await page.evaluate('''() => {
+                const app = document.querySelector('[x-data]');
+                if (app && app._x_dataStack) {
+                    for (const d of app._x_dataStack) {
+                        if (typeof d.isLoggedIn !== 'undefined') {
+                            return {
+                                isLoggedIn: !!d.isLoggedIn,
+                                isPremium: !!d.isPremium,
+                                email: d.selectedEmail ? d.selectedEmail.address : null
+                            };
+                        }
                     }
-                    return { isLoggedIn: false, isPremium: false };
-                }''')
-                
-                # If logged in flag is true on smailpro.com
-                if status.get("isLoggedIn") or status.get("isPremium"):
-                    print(f"\n🎉 LOGIN SMAILPRO BERHASIL TERDETEKSI!")
-                    print(f"URL Saat ini : {current_url}")
-                    print(f"Status Akun  : LoggedIn={status.get('isLoggedIn')}, Premium={status.get('isPremium')}")
-                    logged_in = True
-                    break
+                }
+                return { isLoggedIn: false, isPremium: false };
+            }''')
+    except Exception:
+        pass
 
-            # If user logged in on my.sonjj.com and redirected to dashboard or home
-            elif "my.sonjj.com" in current_url and "/login" not in current_url:
-                print(f"\n🎉 LOGIN DI SONJJ BERHASIL!")
-                print(f"URL: {current_url}")
-                # Navigate to temporary email to finalize session
-                print("Mengarahkan browser ke https://smailpro.com/temporary-email ...")
-                await page.goto("https://smailpro.com/temporary-email")
-                await asyncio.sleep(4)
-                logged_in = True
-                break
-                
-        except Exception as e:
-            pass
-
-    # Save session cookies and storage
+    # Save cookies & session
     cookies = await context.cookies()
     session_data = {
         "cookies": cookies,
@@ -114,16 +130,19 @@ async def run_login_helper():
         json.dump(session_data, f, indent=2)
         
     print("\n" + "=" * 65)
-    print(f"✅ SESI BERHASIL DISIMPAN KE: {config.SESSION_STATE_FILE}")
+    print(f"✅ SESI SMAILPRO BERHASIL DISIMPAN KE: {config.SESSION_STATE_FILE}")
     print(f"📊 Total Cookies Tersimpan: {len(cookies)}")
-    print(f"💾 Browser Profile: {config.BROWSER_PROFILE_DIR}")
+    print(f"🔑 Status Akun: LoggedIn={status.get('isLoggedIn')}, Premium={status.get('isPremium')}")
     print("=" * 65)
     
-    print("\nMenutup browser dalam 5 detik...")
-    await asyncio.sleep(5)
-    await context.close()
-    await playwright.stop()
-    print("✅ Selesai! Bot sekarang siap digunakan dengan akun Anda.\n")
+    print("\nMenutup browser dalam 3 detik...")
+    await asyncio.sleep(3)
+    try:
+        await context.close()
+        await playwright.stop()
+    except Exception:
+        pass
+    print("✅ Selesai! Bot sekarang siap digunakan.\n")
 
 if __name__ == "__main__":
     asyncio.run(run_login_helper())
