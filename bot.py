@@ -47,6 +47,24 @@ user_topup_states: Dict[int, dict] = {}
 active_polling_tasks: Dict[int, asyncio.Task] = {}
 
 
+def schedule_delete(message, delay: int = 10):
+    """
+    Schedules a Telegram message to be automatically deleted after `delay` seconds.
+    Ensures transient chat messages are cleared every 10s, keeping only essential email cards.
+    """
+    if not message:
+        return
+
+    async def _do_delete():
+        try:
+            await asyncio.sleep(delay)
+            await message.delete()
+        except Exception:
+            pass  # Message was already deleted by user or lacks permission
+
+    asyncio.create_task(_do_delete())
+
+
 def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Returns persistent main menu reply keyboard."""
     buttons = [
@@ -62,6 +80,9 @@ def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
 
 # ================= COMMAND: /start =================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
     is_admin = user.id in config.ADMIN_IDS
@@ -84,16 +105,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Silakan pilih menu di bawah ini untuk memulai:"
     )
 
-    await update.message.reply_text(
+    welcome_msg = await update.message.reply_text(
         welcome_text,
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(is_admin)
     )
+    schedule_delete(welcome_msg, delay=20)
 
 
-# ================= ORDER FLOW (GMAIL & OUTLOOK) =================
+# ================= ORDER FLOW (GMAIL, OUTLOOK, HOTMAIL) =================
 async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYPE, service: str):
-    """Handles ordering Gmail or Outlook email."""
+    """Handles ordering Gmail, Outlook, or Hotmail email."""
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
     is_admin = user.id in config.ADMIN_IDS
@@ -109,7 +134,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💰 Top Up Saldo Sekarang", callback_data="btn_topup")]
         ])
-        await update.message.reply_text(
+        warn_msg = await update.message.reply_text(
             f"❌ <b>Saldo Tidak Mencukupi!</b>\n\n"
             f"Saldo Anda saat ini: <code>Rp {db_user['balance']:,}</code>\n"
             f"Tarif per OTP: <code>Rp {config.OTP_PRICE:,}</code>\n\n"
@@ -117,29 +142,12 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
-        return
-
-    # Check if user already has an active order waiting for OTP
-    active_order = db.get_active_order_by_user(user.id)
-    if active_order:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📩 Cek Inbox Order Aktif", callback_data=f"check_inbox_{active_order['id']}")],
-            [InlineKeyboardButton("❌ Batalkan Order Ini", callback_data=f"cancel_order_{active_order['id']}")]
-        ])
-        await update.message.reply_text(
-            f"⚠️ <b>Anda Masih Memiliki Order Aktif!</b>\n\n"
-            f"📧 Email: <code>{active_order['email_address']}</code>\n"
-            f"🏷️ Layanan: <b>{active_order['service'].upper()}</b>\n"
-            f"⏱️ Dibuat: {active_order['created_at']}\n\n"
-            f"Silakan selesaikan atau batalkan order aktif Anda sebelum memesan email baru.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        schedule_delete(warn_msg, delay=10)
         return
 
     # Sending progress indicator
     loading_msg = await update.message.reply_text(
-        f"⏳ <i>Sedang membuka Smailpro Premium dan men-generate 1 alamat {service_title}... Mohon tunggu sebentar.</i>",
+        f"⏳ <i>Sedang membuka Server Gmail, Outlook, Hotmail dan men-generate 1 alamat {service_title}... Mohon tunggu sebentar.</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -148,13 +156,14 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         result = await smailpro.create_email(service)
 
         if not result.get("success") or not result.get("email"):
-            error_msg = result.get("error", "Gagal menghubungi Smailpro")
+            error_msg = result.get("error", "Gagal menghubungi Server Gmail, Outlook, Hotmail")
             await loading_msg.edit_text(
                 f"❌ <b>Gagal Generate Email!</b>\n\n"
                 f"Detail: <code>{error_msg}</code>\n"
                 f"Silakan coba beberapa saat lagi atau hubungi admin.",
                 parse_mode=ParseMode.HTML
             )
+            schedule_delete(loading_msg, delay=10)
             return
 
         email_address = result["email"]
@@ -196,6 +205,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
             f"3. Klik tombol <b>📩 Cek Inbox / OTP</b> di bawah untuk mengambil kodenya!"
         )
 
+        # Main order card is KEPT in chat! Not scheduled for deletion.
         await loading_msg.edit_text(
             order_text,
             parse_mode=ParseMode.HTML,
@@ -208,24 +218,27 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
             f"❌ Terjadi kesalahan saat memproses order: <code>{str(e)}</code>",
             parse_mode=ParseMode.HTML
         )
+        schedule_delete(loading_msg, delay=10)
 
 
 # ================= INBOX CHECK HANDLER =================
 async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("Memeriksa inbox Smailpro...", show_alert=False)
+    await query.answer("Memeriksa inbox Server Gmail, Outlook, Hotmail...", show_alert=False)
 
     data = query.data
     order_id = int(data.split("_")[-1])
     order = db.get_order(order_id)
 
     if not order:
-        await query.message.reply_text("❌ Data order tidak ditemukan.")
+        res = await query.message.reply_text("❌ Data order tidak ditemukan.")
+        schedule_delete(res, delay=10)
         return
 
     if order["status"] == "completed":
-        await query.message.reply_text(
+        res = await query.message.reply_text(
             f"✅ <b>Order #{order_id} sudah selesai!</b>\n\n"
+            f"📧 <b>Email:</b> <code>{order['email_address']}</code>\n"
             f"🔑 <b>Kode OTP:</b> <code>{order['otp_code']}</code>\n"
             f"📬 <b>Pengirim:</b> {order['otp_sender']}\n"
             f"📌 <b>Subjek:</b> {order['otp_subject']}",
@@ -234,7 +247,8 @@ async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if order["status"] == "cancelled":
-        await query.message.reply_text("❌ Order ini sudah dibatalkan sebelumnya.")
+        res = await query.message.reply_text("❌ Order ini sudah dibatalkan sebelumnya.")
+        schedule_delete(res, delay=10)
         return
 
     user_id = order["user_id"]
@@ -242,30 +256,27 @@ async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     email_key = order.get("email_key", "")
     email_ts = order.get("email_timestamp", 0)
 
-    # Poll inbox from Smailpro
+    # Poll inbox from Smailpro Engine
     inbox_res = await smailpro.check_inbox(email_address, key=email_key, timestamp=email_ts)
 
     if not inbox_res.get("success"):
-        await query.message.reply_text(
+        res = await query.message.reply_text(
             f"⚠️ Gagal mengecek inbox: <code>{inbox_res.get('error')}</code>\nSilakan coba lagi.",
             parse_mode=ParseMode.HTML
         )
+        schedule_delete(res, delay=10)
         return
 
     if not inbox_res.get("has_messages"):
-        # No message yet
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📩 Cek Inbox / OTP Lagi", callback_data=f"check_inbox_{order_id}")],
-            [InlineKeyboardButton("🔄 Auto Refresh (3 Menit)", callback_data=f"auto_poll_{order_id}")],
-            [InlineKeyboardButton("❌ Batalkan Order", callback_data=f"cancel_order_{order_id}")]
-        ])
-        await query.message.reply_text(
+        # No message yet: show clean status note and auto-delete after 10 seconds!
+        status_msg = await query.message.reply_text(
             f"📭 <b>Belum ada pesan / OTP yang masuk.</b>\n\n"
             f"📧 Email: <code>{email_address}</code>\n"
-            f"💡 <i>Saldo Anda BELUM dipotong sepeserpun. Pastikan Anda sudah mengirimkan OTP dari aplikasi target, lalu klik cek kembali.</i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
+            f"💡 <i>Saldo Anda BELUM dipotong sepeserpun. Pastikan Anda sudah mengirimkan OTP dari aplikasi target, lalu klik cek kembali.</i>\n\n"
+            f"⏱️ <i>Pesan status ini otomatis terhapus dalam 10 detik agar chat tetap rapi.</i>",
+            parse_mode=ParseMode.HTML
         )
+        schedule_delete(status_msg, delay=10)
         return
 
     # Message(s) found! Process first message
@@ -323,6 +334,17 @@ async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode=ParseMode.HTML
     )
 
+    # Update original order card markup
+    completed_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔑 OTP: {otp_code or 'Diterima'}", callback_data=f"noop_{order_id}")],
+        [InlineKeyboardButton("📩 Cek Inbox Lagi", callback_data=f"check_inbox_{order_id}")],
+        [InlineKeyboardButton("🗑️ Hapus Kartu Ini", callback_data=f"delete_card_{order_id}")]
+    ])
+    try:
+        await query.message.edit_reply_markup(reply_markup=completed_keyboard)
+    except Exception:
+        pass
+
 
 # ================= AUTO REFRESH INBOX TASK =================
 async def auto_poll_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -342,16 +364,17 @@ async def auto_poll_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     status_msg = await query.message.reply_text(
         f"🔄 <b>Auto-Refresh Aktif!</b>\n"
         f"Bot akan mengecek inbox email <code>{order['email_address']}</code> setiap 5 detik secara otomatis...\n"
-        f"<i>Notifikasi akan dikirim begitu OTP masuk.</i>",
+        f"<i>Notifikasi akan dikirim begitu OTP masuk. Pesan status ini terhapus dalam 10 detik.</i>",
         parse_mode=ParseMode.HTML
     )
+    schedule_delete(status_msg, delay=10)
 
     # Launch background polling task
-    task = asyncio.create_task(run_auto_poll(order_id, context, status_msg))
+    task = asyncio.create_task(run_auto_poll(order_id, context))
     active_polling_tasks[order_id] = task
 
 
-async def run_auto_poll(order_id: int, context: ContextTypes.DEFAULT_TYPE, status_msg):
+async def run_auto_poll(order_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Polls inbox every 5s for up to 3 minutes (36 checks)."""
     max_checks = 36  # 36 * 5s = 180s (3 minutes)
     for i in range(max_checks):
@@ -422,20 +445,16 @@ async def run_auto_poll(order_id: int, context: ContextTypes.DEFAULT_TYPE, statu
     # If timed out after 3 minutes
     order = db.get_order(order_id)
     if order and order["status"] == "waiting":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📩 Cek Inbox Manual", callback_data=f"check_inbox_{order_id}")],
-            [InlineKeyboardButton("❌ Batalkan Order", callback_data=f"cancel_order_{order_id}")]
-        ])
-        await context.bot.send_message(
+        timeout_msg = await context.bot.send_message(
             chat_id=order["user_id"],
             text=(
                 f"⏱️ <b>Waktu auto-refresh 3 menit telah selesai.</b>\n"
                 f"Belum ada email yang masuk untuk <code>{order['email_address']}</code>.\n"
-                f"Saldo Anda tetap utuh. Anda dapat menekan tombol <b>Cek Inbox Manual</b> kapan saja saat OTP dikirim."
+                f"Saldo Anda tetap utuh Rp 0 terpotong. Anda dapat menekan tombol <b>Cek Inbox / OTP</b> pada kartu email kapan saja saat OTP dikirim."
             ),
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
+            parse_mode=ParseMode.HTML
         )
+        schedule_delete(timeout_msg, delay=10)
 
 
 # ================= CANCEL ORDER HANDLER =================
@@ -446,31 +465,62 @@ async def cancel_order_callback(update: Update, context: ContextTypes.DEFAULT_TY
     order = db.get_order(order_id)
     if not order:
         await query.answer("Order tidak ditemukan.", show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         return
 
     if order["status"] != "waiting":
         await query.answer("Order ini tidak dapat dibatalkan (sudah selesai/batal).", show_alert=True)
         return
 
-    # Cancel order
+    # Cancel order in DB
     db.cancel_order(order_id)
     if order_id in active_polling_tasks:
         active_polling_tasks[order_id].cancel()
         del active_polling_tasks[order_id]
 
-    await query.answer("Order berhasil dibatalkan.", show_alert=False)
-    await query.message.edit_text(
-        f"❌ <b>Order #{order_id} Dibatalkan.</b>\n\n"
-        f"📧 Email: <code>{order['email_address']}</code>\n"
-        f"💰 <b>Saldo Anda utuh (tidak terpotong sepeserpun).</b>\n\n"
-        f"Silakan pesan kembali jika sudah siap.",
-        parse_mode=ParseMode.HTML
-    )
+    await query.answer(f"❌ Order #{order_id} ({order['email_address']}) dibatalkan. Saldo Anda utuh.", show_alert=True)
+
+    # Delete the message card immediately so it disappears from the list
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    # Send temporary confirmation note that self-deletes in 10s
+    try:
+        user_id = query.from_user.id
+        notice = await context.bot.send_message(
+            chat_id=user_id,
+            text=f"🗑️ <i>Order #{order_id} (<code>{order['email_address']}</code>) telah dibatalkan & dihapus dari list. Saldo Anda utuh.</i>",
+            parse_mode=ParseMode.HTML
+        )
+        schedule_delete(notice, delay=10)
+    except Exception:
+        pass
+
+
+async def delete_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Kartu email dihapus dari chat.", show_alert=False)
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+
+async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Kode OTP sudah masuk. Silakan salin.", show_alert=False)
 
 
 # ================= TOP UP SALDO FLOW =================
 async def topup_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays Top Up options and payment methods."""
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
 
@@ -497,9 +547,10 @@ async def topup_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.message.reply_text(topup_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        msg = await update.callback_query.message.reply_text(topup_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     else:
-        await update.message.reply_text(topup_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        msg = await update.message.reply_text(topup_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    schedule_delete(msg, delay=60)
 
 
 async def topup_amount_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -510,11 +561,12 @@ async def topup_amount_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data == "topup_amt_custom":
         user_topup_states[user_id] = {"step": "waiting_custom_amount"}
-        await query.message.reply_text(
+        custom_msg = await query.message.reply_text(
             f"✏️ <b>Ketik nominal saldo yang ingin Anda top up:</b>\n"
             f"<i>(Contoh: <code>15000</code> atau <code>25000</code>. Minimal Rp {config.MIN_TOPUP:,})</i>",
             parse_mode=ParseMode.HTML
         )
+        schedule_delete(custom_msg, delay=30)
         return
 
     amount = int(data.replace("topup_amt_", ""))
@@ -549,15 +601,17 @@ async def show_payment_instructions(message_target, user_id: int, amount: int):
     try:
         # Generate dynamic QRIS PNG in memory
         qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, amount)
-        await message_target.reply_photo(
+        qr_msg = await message_target.reply_photo(
             photo=qr_bytes,
             caption=caption,
             parse_mode=ParseMode.HTML
         )
+        schedule_delete(qr_msg, delay=300)
     except Exception as e:
         logger.error("Failed to generate QRIS photo: %s", e)
         # Fallback to text if image generation encounters issue
-        await message_target.reply_text(caption, parse_mode=ParseMode.HTML)
+        fallback_msg = await message_target.reply_text(caption, parse_mode=ParseMode.HTML)
+        schedule_delete(fallback_msg, delay=300)
 
 
 # ================= RECEIVE PROOF OF TRANSFER =================
@@ -690,6 +744,9 @@ async def admin_topup_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # ================= PROFILE & HISTORY =================
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
     is_admin = user.id in config.ADMIN_IDS
@@ -708,8 +765,9 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷️ <b>Username:</b> @{user.username or '-'}\n\n"
         f"💰 <b>Saldo Tersedia:</b> {balance_display}\n"
         f"💸 <b>Total Pemakaian:</b> Rp {db_user['total_spent']:,}\n"
-        f"📬 <b>Order Aktif:</b> {active_info}\n\n"
-        f"📅 <b>Terdaftar Sejak:</b> {db_user['created_at']}"
+        f"📬 <b>Order Aktif Terakhir:</b> {active_info}\n\n"
+        f"📅 <b>Terdaftar Sejak:</b> {db_user['created_at']}\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 10 detik agar chat tetap rapi.</i>"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -717,20 +775,25 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📖 Riwayat Order", callback_data="btn_history")]
     ])
 
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    prof_msg = await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    schedule_delete(prof_msg, delay=10)
 
 
 async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
     user = update.effective_user
     orders = db.get_user_orders(user.id, limit=8)
 
     if not orders:
-        text = "📖 <b>Riwayat Order:</b>\n\nAnda belum memiliki riwayat order email/OTP."
+        text = "📖 <b>Riwayat Order:</b>\n\nAnda belum memiliki riwayat order email/OTP.\n\n⏱️ <i>Pesan ini otomatis dihapus dalam 10 detik.</i>"
         if update.callback_query:
             await update.callback_query.answer()
-            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
+            hist_msg = await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
         else:
-            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+            hist_msg = await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        schedule_delete(hist_msg, delay=10)
         return
 
     lines = ["📖 <b>RIWAYAT 8 ORDER TERAKHIR:</b>\n"]
@@ -742,31 +805,38 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   📧 <code>{o['email_address']}</code>\n"
             f"   {otp_info} | {o['created_at'][:16]}\n"
         )
+    lines.append("\n⏱️ <i>Pesan ini otomatis dihapus dalam 10 detik agar chat tetap rapi.</i>")
 
     full_text = "\n".join(lines)
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.message.reply_text(full_text, parse_mode=ParseMode.HTML)
+        hist_msg = await update.callback_query.message.reply_text(full_text, parse_mode=ParseMode.HTML)
     else:
-        await update.message.reply_text(full_text, parse_mode=ParseMode.HTML)
+        hist_msg = await update.message.reply_text(full_text, parse_mode=ParseMode.HTML)
+    schedule_delete(hist_msg, delay=10)
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
     text = (
         f"ℹ️ <b>PANDUAN & BANTUAN BOT OTP</b>\n\n"
         f"1. <b>Cara Pesan Email:</b>\n"
         f"   • Pastikan saldo Anda minimal Rp {config.OTP_PRICE:,}.\n"
-        f"   • Klik menu <b>📧 Pesan OTP Gmail</b> atau <b>📬 Pesan OTP Outlook</b>.\n"
-        f"   • Bot akan membuka SmailPro Premium dan memberikan 1 alamat email.\n\n"
+        f"   • Klik menu <b>📧 Otp by Gmail</b>, <b>📬 Otp by Outlook</b>, atau <b>📨 Otp by Hotmail</b>.\n"
+        f"   • Bot akan membuka Server Gmail, Outlook, Hotmail dan memberikan 1 alamat email Real Account baru.\n\n"
         f"2. <b>Cara Menerima OTP:</b>\n"
         f"   • Salin email yang diberikan dan gunakan untuk registrasi pada website/aplikasi tujuan.\n"
-        f"   • Setelah OTP terkirim, kembali ke bot dan klik tombol <b>📩 Cek Inbox / OTP</b>.\n"
+        f"   • Setelah OTP terkirim, kembali ke bot dan klik tombol <b>📩 Cek Inbox / OTP</b> pada kartu email tersebut.\n"
         f"   • Jika kode masuk, bot akan menampilkan kode OTP dan baru memotong saldo Anda sebesar Rp {config.OTP_PRICE:,}.\n\n"
         f"3. <b>Top Up Saldo:</b>\n"
         f"   • Klik menu <b>💰 Top Up Saldo</b> (Minimal Rp {config.MIN_TOPUP:,}).\n"
-        f"   • Lakukan transfer dan kirim bukti pembayaran ke bot."
+        f"   • Lakukan transfer dan kirim bukti pembayaran ke bot.\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik agar chat tetap rapi.</i>"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    help_msg = await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    schedule_delete(help_msg, delay=15)
 
 
 # ================= ADMIN DASHBOARD & COMMANDS =================
@@ -788,7 +858,7 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• Order Sukses (OTP Masuk): <b>{stats['completed_orders']}</b>\n"
         f"• Total Omset OTP: <b>Rp {stats['total_revenue']:,}</b>\n"
         f"• Total Saldo Mengendap: <b>Rp {stats['total_user_balance']:,}</b>\n\n"
-        f"🌐 <b>Status Akun SmailPro:</b>\n"
+        f"🌐 <b>Status Server Gmail, Outlook, Hotmail:</b>\n"
         f"• Status Premium: <b>{premium_icon}</b>\n"
         f"• Logged In: <b>{session_status.get('isLoggedIn')}</b>\n\n"
         f"🛠️ <b>Perintah Admin:</b>\n"
@@ -863,15 +933,18 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Check topup custom amount state
     if user_id in user_topup_states and user_topup_states[user_id].get("step") == "waiting_custom_amount":
+        schedule_delete(update.message, delay=10)
         if text.isdigit():
             amt = int(text)
             if amt < config.MIN_TOPUP:
-                await update.message.reply_text(f"❌ Minimal top up adalah Rp {config.MIN_TOPUP:,}. Silakan masukkan nominal yang valid:")
+                warn = await update.message.reply_text(f"❌ Minimal top up adalah Rp {config.MIN_TOPUP:,}. Silakan masukkan nominal yang valid:")
+                schedule_delete(warn, delay=10)
                 return
             await show_payment_instructions(update.message, user_id, amt)
             return
         else:
-            await update.message.reply_text("Ketikkan angka saja, contoh: 10000")
+            warn = await update.message.reply_text("Ketikkan angka saja, contoh: 10000")
+            schedule_delete(warn, delay=10)
             return
 
     # Main Menu routing
@@ -893,10 +966,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admin_panel_handler(update, context)
     else:
         # Default fallback
-        await update.message.reply_text(
+        schedule_delete(update.message, delay=10)
+        fb = await update.message.reply_text(
             "Silakan gunakan tombol menu di bawah untuk bernavigasi:",
             reply_markup=get_main_keyboard(user_id in config.ADMIN_IDS)
         )
+        schedule_delete(fb, delay=10)
 
 
 from aiohttp import web
@@ -966,6 +1041,8 @@ def main():
     application.add_handler(CallbackQueryHandler(check_inbox_callback, pattern=r"^check_inbox_"))
     application.add_handler(CallbackQueryHandler(auto_poll_callback, pattern=r"^auto_poll_"))
     application.add_handler(CallbackQueryHandler(cancel_order_callback, pattern=r"^cancel_order_"))
+    application.add_handler(CallbackQueryHandler(delete_card_callback, pattern=r"^delete_card_"))
+    application.add_handler(CallbackQueryHandler(noop_callback, pattern=r"^noop_"))
     application.add_handler(CallbackQueryHandler(topup_menu_handler, pattern=r"^btn_topup$"))
     application.add_handler(CallbackQueryHandler(history_handler, pattern=r"^btn_history$"))
     application.add_handler(CallbackQueryHandler(topup_amount_callback, pattern=r"^topup_amt_"))
