@@ -340,9 +340,8 @@ class SmailProEngine:
                     raw_body = msg.get("body") or ""
                     clean_body = self.clean_html(raw_body) if raw_body else ""
 
-                    # Extract OTP from subject + body
-                    combined_text = f"{subject}\n{clean_body}"
-                    otp_code = self.extract_otp(combined_text)
+                    # Extract OTP from subject + body (prioritizing subject, supporting alphanumeric & numeric)
+                    otp_code = self.extract_otp(subject, clean_body)
 
                     parsed_messages.append({
                         "mid": msg.get("mid"),
@@ -363,49 +362,107 @@ class SmailProEngine:
                 return {"success": False, "has_messages": False, "messages": [], "error": str(e)}
 
     @staticmethod
-    def extract_otp(text: str) -> Optional[str]:
+    def extract_otp(subject: str, body: Optional[str] = None) -> Optional[str]:
         """
-        Extracts 4-8 digit OTP verification codes from email text using regex heuristics.
+        Extracts alphanumeric or numeric OTP verification codes from subject and body.
+        Supports digits, alphanumeric uppercase codes (e.g. Dreamina 'XSRKGH'), Google G-codes, etc.
         """
-        if not text:
-            return None
+        clean_subj = subject.strip() if subject else ""
+        clean_b = body.strip() if body else ""
 
-        # Pattern 1: Keywords like 'code is 123456', 'kode verifikasi: 123456', 'OTP: 1234'
-        kw_patterns = [
-            r'(?i)(?:otp|code|kode|pin|verification|verifikasi|security code|kata sandi)\s*(?:is|adalah|:|;|-|=|\s)\s*([0-9]{4,8})\b',
-            r'(?i)(?:verification|verifikasi|confirm|konfirmasi)\s*code\s*[:\s]*([0-9]{4,8})\b',
-            r'\b([0-9]{3}[-\s][0-9]{3})\b',  # e.g., 123-456 or 123 456
-        ]
+        # Keyword prefix pattern for OTP / verification code
+        kw_prefix = (
+            r'(?i)(?:verification\s*code|security\s*code|confirm(?:ation)?\s*code|'
+            r'login\s*code|access\s*code|single-use\s*code|one-time\s*(?:passcode|password|code)|'
+            r'kode\s*(?:verifikasi|keamanan|otp|akses|masuk)|otp\s*code|otp|code|kode|pin)'
+            r'\s*(?:is|adalah|:|;|-|=|\s)\s*'
+        )
+        # Keyword suffix pattern (e.g. 'XSRKGH is your verification code')
+        kw_suffix = (
+            r'([A-Za-z0-9]{4,10})\s+(?:is\s+your|adalah\s+kode|is\s+the)\s+'
+            r'(?:[a-zA-Z0-9\s]+)?(?:verification\s*code|security\s*code|code|otp|kode)'
+        )
 
-        for p in kw_patterns:
-            m = re.search(p, text)
+        banned_words = {
+            "EMAIL", "ACCOUNT", "GOOGLE", "VERIFY", "WELCOME", "PLEASE", "UPDATE",
+            "SERVICE", "PASSWORD", "MESSAGE", "SUPPORT", "SECURITY", "000000", "FFFFFF"
+        }
+
+        # --- 1. SEARCH SUBJECT FIRST (highest accuracy, zero HTML noise) ---
+        if clean_subj:
+            # Pattern 1a: Prefix match in subject (e.g. 'code is XSRKGH', 'OTP: 123456')
+            m = re.search(kw_prefix + r'([A-Za-z0-9]{4,10})\b', clean_subj)
             if m:
-                code = m.group(1).replace("-", "").replace(" ", "").strip()
-                if 4 <= len(code) <= 8 and code.isdigit():
-                    return code
+                val = m.group(1).strip()
+                if val.upper() not in banned_words:
+                    return val
 
-        # Pattern 2: Standalone 6-digit or 4-digit number surrounded by whitespace or markdown
-        six_digit = re.findall(r'(?<!\d)([0-9]{6})(?!\d)', text)
-        if six_digit:
-            # Filter out common years like 2024, 2025, 2026
-            for c in six_digit:
-                if not (c.startswith("202") and len(c) == 4):
-                    return c
+            # Pattern 1b: Suffix match in subject (e.g. 'XSRKGH is your code')
+            m = re.search(kw_suffix, clean_subj, re.IGNORECASE)
+            if m:
+                val = m.group(1).strip()
+                if val.upper() not in banned_words:
+                    return val
 
-        four_digit = re.findall(r'(?<!\d)([0-9]{4})(?!\d)', text)
-        if four_digit:
-            for c in four_digit:
-                if c not in ("2024", "2025", "2026", "2027"):
-                    return c
+            # Pattern 1c: Standalone uppercase token or numbers in subject (e.g. '[Dreamina] XSRKGH')
+            tokens = re.findall(r'\b([A-Za-z0-9]{5,8})\b', clean_subj)
+            for t in tokens:
+                if t.isupper() and t not in banned_words:
+                    # Must have at least 1 digit or be 6 chars like 'XSRKGH'
+                    if any(c.isdigit() for c in t) or len(t) == 6:
+                        return t
+
+        # --- 2. SEARCH BODY WITH KEYWORDS ---
+        if clean_b:
+            m = re.search(kw_prefix + r'([A-Za-z0-9]{4,10})\b', clean_b)
+            if m:
+                val = m.group(1).strip()
+                if val.upper() not in banned_words:
+                    return val
+
+            m = re.search(kw_suffix, clean_b, re.IGNORECASE)
+            if m:
+                val = m.group(1).strip()
+                if val.upper() not in banned_words:
+                    return val
+
+            # Pattern 2a: Google format 'G-123456'
+            m = re.search(r'\b[Gg]-([0-9]{6})\b', clean_b)
+            if m:
+                return m.group(1).strip()
+
+            # Pattern 2b: Dashed numbers '123-456'
+            m = re.search(r'\b([0-9]{3}[-\s][0-9]{3})\b', clean_b)
+            if m:
+                return m.group(1).replace("-", "").replace(" ", "").strip()
+
+            # Pattern 2c: Standalone 6-digit number (excluding colors like 000000 or years)
+            six_digits = re.findall(r'(?<!\d)([0-9]{6})(?!\d)', clean_b)
+            for d in six_digits:
+                if d not in ("000000", "111111", "999999", "123456") and not d.startswith("202"):
+                    return d
+
+            # Pattern 2d: Standalone 4-8 digit number
+            digits = re.findall(r'(?<!\d)([0-9]{4,8})(?!\d)', clean_b)
+            for d in digits:
+                if d not in ("2024", "2025", "2026", "2027", "0000", "00000", "000000"):
+                    return d
 
         return None
 
     @staticmethod
     def clean_html(raw_html: str) -> str:
-        """Removes html tags and decodes simple text."""
-        cleanr = re.compile(r'<.*?>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});')
-        cleantext = re.sub(cleanr, ' ', raw_html)
-        return " ".join(cleantext.split())
+        """Removes html tags, style/script blocks, CSS hex colors, and decodes simple text."""
+        if not raw_html:
+            return ""
+        # 1. Remove style and script tags with inner content
+        text = re.sub(r'(?is)<style.*?>.*?</style>', ' ', raw_html)
+        text = re.sub(r'(?is)<script.*?>.*?</script>', ' ', text)
+        # 2. Remove all other html tags & entities
+        text = re.sub(r'<.*?>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});', ' ', text)
+        # 3. Remove hex color references like #000000 or #ffffff
+        text = re.sub(r'#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b', ' ', text)
+        return " ".join(text.split())
 
     async def close(self):
         """Clean shutdown of browser context."""

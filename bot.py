@@ -75,7 +75,9 @@ def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton("🏷️ Tarif & Info"), KeyboardButton("💬 Hubungi CS / Admin")]
     ]
     if is_admin:
-        buttons.append([KeyboardButton("⚙️ Panel Admin")])
+        buttons.append([KeyboardButton("🧹 Bersihkan Chat"), KeyboardButton("⚙️ Panel Admin")])
+    else:
+        buttons.append([KeyboardButton("🧹 Bersihkan Chat")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 
@@ -836,6 +838,60 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     schedule_delete(hist_msg, delay=10)
 
 
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Clears recent chat history in the private chat by deleting messages.
+    """
+    chat_id = update.effective_chat.id
+    curr_msg = update.effective_message
+    curr_id = curr_msg.message_id if curr_msg else None
+
+    # Status notice
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="🧹 <i>Sedang membersihkan riwayat chat...</i>",
+        parse_mode=ParseMode.HTML
+    )
+
+    if curr_id:
+        # Collect message IDs backwards (up to 100 messages)
+        ids_to_delete = list(range(max(1, curr_id - 100), curr_id + 1))
+        # Batch delete in chunks of 100
+        for i in range(0, len(ids_to_delete), 100):
+            chunk = ids_to_delete[i:i + 100]
+            try:
+                await context.bot.delete_messages(chat_id=chat_id, message_ids=chunk)
+            except Exception:
+                # Fallback: delete individually
+                for mid in chunk:
+                    try:
+                        await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+                    except Exception:
+                        pass
+
+    # Delete status notice
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    user = update.effective_user
+    is_admin = user.id in config.ADMIN_IDS if user else False
+
+    # Send clean fresh menu
+    clean_notice = (
+        f"🧹 <b>Riwayat chat berhasil dibersihkan!</b>\n\n"
+        f"Chat Anda sekarang bersih dan siap digunakan.\n"
+        f"Silakan pilih menu di bawah atau ketik /start untuk mulai memesan:"
+    )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=clean_notice,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_main_keyboard(is_admin)
+    )
+
+
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         schedule_delete(update.message, delay=10)
@@ -1187,6 +1243,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cs_handler(update, context)
     elif text == "ℹ️ Bantuan":
         await help_handler(update, context)
+    elif text in ("🧹 Bersihkan Chat", "/clear"):
+        await clear_command(update, context)
     elif text == "⚙️ Panel Admin":
         await admin_panel_handler(update, context)
     else:
@@ -1239,6 +1297,7 @@ async def post_init(application: Application):
         BotCommand("stok", "Cek live stok server email"),
         BotCommand("riwayat", "Riwayat 8 order terakhir"),
         BotCommand("tarif", "Daftar tarif & ketentuan"),
+        BotCommand("clear", "Bersihkan semua riwayat chat"),
         BotCommand("cs", "Hubungi Customer Service"),
         BotCommand("bantuan", "Panduan lengkap bot")
     ]
@@ -1284,6 +1343,7 @@ def main():
     application.add_handler(CommandHandler("order", order_command))
     application.add_handler(CommandHandler("stok", stok_handler))
     application.add_handler(CommandHandler("tarif", tarif_handler))
+    application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("cs", cs_handler))
     application.add_handler(CommandHandler("bantuan", help_handler))
     application.add_handler(CommandHandler("saldo", profile_handler))
