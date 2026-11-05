@@ -1031,6 +1031,11 @@ async def post_init(application: Application):
         logger.error("Failed to start SmailPro engine on boot: %s", e)
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Logs errors caused by Updates."""
+    logger.error("Exception while handling an update: %s", context.error)
+
+
 def main():
     if not config.BOT_TOKEN or "xx" in config.BOT_TOKEN:
         print("\n" + "=" * 65)
@@ -1072,6 +1077,9 @@ def main():
 
     # Text router
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+
+    # Error handler
+    application.add_error_handler(error_handler)
 
     print("==================================================")
     print("🚀 BOT TELEGRAM OTP EMAIL AKTIF DAN SIAP DIGUNAKAN!")
