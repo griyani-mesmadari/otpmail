@@ -128,113 +128,86 @@ class SmailProEngine:
             logger.error("Error checking session status: %s", e)
             return {"isLoggedIn": False, "isPremium": False, "error": str(e)}
 
-    async def create_email(self, service: str = "gmail") -> Dict[str, Any]:
+    async def create_email(self, service: str = "gmail", max_retries: int = 10) -> Dict[str, Any]:
         """
-        Creates a new temporary email for Gmail or Outlook.
-        service: 'gmail' or 'outlook'
-        Returns dict: {"success": bool, "email": str, "key": str, "timestamp": int, "error": str}
+        Creates a new temporary email for Gmail (Server 2/3), Outlook (Server 2), or Hotmail (Server 2).
+        Uses Real Account (Premium) and guarantees unique email that was never generated before.
         """
+        import random
+        from database import db
+
         async with self.lock:
             await self.ensure_page_ready()
             
-            domain = "gmail.com" if service == "gmail" else "outlook.com"
-            email_type = "google" if service == "gmail" else "microsoft"
-            
-            logger.info("Requesting new %s email from SmailPro...", service.upper())
+            service_lower = service.lower().strip()
+            if service_lower == "gmail":
+                domain = "gmail.com"
+                server_choice = random.choice(["2", "3"])  # Server 2 (1000) & Server 3 (756) = ~1700 stok
+                email_type = "google"
+            elif service_lower == "hotmail":
+                domain = "hotmail.com"
+                server_choice = "2"  # Server 2 = ~8700 stok
+                email_type = "microsoft"
+            else:  # outlook
+                domain = "outlook.com"
+                server_choice = "2"  # Server 2 = ~8700 stok
+                email_type = "microsoft"
 
-            # Method 1: Execute internal API in browser context
-            try:
-                result = await self.page.evaluate('''async (cfg) => {
-                    const query = `?username=random&type=alias&domain=${cfg.domain}&server=1`;
-                    const url = `/app/create${query}`;
-                    
-                    const headers = { 'Content-Type': 'application/json' };
-                    // If not logged in, captcha would be needed, but logged in accounts don't need captcha
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        headers: headers
-                    });
+            account_type = "real"  # Real Account Premium
 
-                    if (!response.ok) {
-                        const err = await response.json().catch(() => ({ msg: 'HTTP ' + response.status }));
-                        return { success: false, error: err.msg || err.message || ('HTTP ' + response.status) };
-                    }
+            for attempt in range(max_retries):
+                if service_lower == "gmail" and attempt > 0:
+                    server_choice = random.choice(["2", "3"])
 
-                    const data = await response.json();
-                    if (data && data.address) {
-                        return {
-                            success: true,
-                            email: data.address,
-                            key: data.key || '',
-                            timestamp: data.timestamp || Math.floor(Date.now() / 1000)
-                        };
-                    }
-                    return { success: false, error: data.msg || 'No email returned' };
-                }''', {"domain": domain, "emailType": email_type})
+                logger.info("Requesting fresh %s (%s, server-%s, %s) email from SmailPro (attempt %d/%d)...",
+                            service.upper(), domain, server_choice, account_type, attempt + 1, max_retries)
 
-                if result.get("success") and result.get("email"):
-                    logger.info("Successfully generated email via API fetch: %s", result["email"])
-                    return result
-                else:
-                    logger.warning("Fetch method returned: %s. Falling back to DOM clicks...", result)
-            except Exception as e:
-                logger.warning("Internal fetch failed: %s. Trying DOM automation fallback...", e)
+                try:
+                    result = await self.page.evaluate('''async (cfg) => {
+                        const query = `?username=random&type=${cfg.type}&domain=${cfg.domain}&server=${cfg.server}`;
+                        const url = `/app/create${query}`;
+                        
+                        const headers = { 'Content-Type': 'application/json' };
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            headers: headers
+                        });
 
-            # Method 2: Fallback via DOM interaction
-            try:
-                # Select service button
-                button_keyword = "Google" if service == "gmail" else "Microsoft"
-                btn_clicked = await self.page.evaluate('''(keyword) => {
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    const btn = buttons.find(b => b.innerText.includes(keyword));
-                    if (btn) {
-                        btn.click();
-                        return true;
-                    }
-                    return false;
-                }''', button_keyword)
-                
-                await self.page.wait_for_timeout(1000)
-
-                # Click Generate
-                await self.page.evaluate('''() => {
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    const btn = buttons.find(b => b.innerText.includes('Generate') || b.innerText.includes('Create'));
-                    if (btn) btn.click();
-                }''')
-                
-                # Wait for email update
-                for _ in range(10):
-                    await self.page.wait_for_timeout(1000)
-                    active_email = await self.page.evaluate('''() => {
-                        const app = document.querySelector('[x-data]');
-                        if (app && app._x_dataStack) {
-                            for (const d of app._x_dataStack) {
-                                if (d.selectedEmail && d.selectedEmail.address) {
-                                    return {
-                                        email: d.selectedEmail.address,
-                                        key: d.selectedEmail.key || '',
-                                        timestamp: d.selectedEmail.timestamp || Math.floor(Date.now() / 1000)
-                                    };
-                                }
-                            }
-                        }
-                        return null;
-                    }''')
-                    
-                    if active_email and active_email.get("email"):
-                        logger.info("Successfully generated email via DOM: %s", active_email["email"])
-                        return {
-                            "success": True,
-                            "email": active_email["email"],
-                            "key": active_email.get("key", ""),
-                            "timestamp": active_email.get("timestamp", int(time.time()))
+                        if (!response.ok) {
+                            const err = await response.json().catch(() => ({ msg: 'HTTP ' + response.status }));
+                            return { success: false, error: err.msg || err.message || ('HTTP ' + response.status) };
                         }
 
-                return {"success": False, "error": "Timeout waiting for email generation"}
-            except Exception as e:
-                logger.error("DOM fallback failed: %s", e)
-                return {"success": False, "error": str(e)}
+                        const data = await response.json();
+                        if (data && data.address) {
+                            return {
+                                success: true,
+                                email: data.address,
+                                key: data.key || '',
+                                timestamp: data.timestamp || Math.floor(Date.now() / 1000)
+                            };
+                        }
+                        return { success: false, error: data.msg || 'No email returned' };
+                    }''', {"domain": domain, "type": account_type, "server": server_choice, "emailType": email_type})
+
+                    if result.get("success") and result.get("email"):
+                        cand = result["email"]
+                        if db.is_email_used(cand):
+                            logger.warning("Duplicate detected: %s was already used in an earlier order. Regenerating...", cand)
+                            await asyncio.sleep(0.5)
+                            continue
+
+                        logger.info("Successfully generated fresh real email: %s", cand)
+                        return result
+                    else:
+                        logger.warning("Attempt %d returned: %s", attempt + 1, result)
+
+                except Exception as e:
+                    logger.warning("Internal fetch failed on attempt %d: %s", attempt + 1, e)
+
+                await asyncio.sleep(0.5)
+
+            return {"success": False, "error": f"Gagal mendapatkan email unik setelah {max_retries} percobaan"}
 
     async def check_inbox(self, email_address: str, key: str = "", timestamp: int = 0) -> Dict[str, Any]:
         """

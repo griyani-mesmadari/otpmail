@@ -50,7 +50,8 @@ active_polling_tasks: Dict[int, asyncio.Task] = {}
 def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Returns persistent main menu reply keyboard."""
     buttons = [
-        [KeyboardButton("📧 Pesan OTP Gmail"), KeyboardButton("📬 Pesan OTP Outlook")],
+        [KeyboardButton("📧 Otp by Gmail ( 1700 stok )")],
+        [KeyboardButton("📬 Otp by Outlook ( 8700 stok )"), KeyboardButton("📨 Otp by Hotmail ( 8700 stok )")],
         [KeyboardButton("💰 Top Up Saldo"), KeyboardButton("👤 Profil & Saldo")],
         [KeyboardButton("📖 Riwayat Order"), KeyboardButton("ℹ️ Bantuan")]
     ]
@@ -70,9 +71,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"👋 Halo, <b>{user.first_name}</b>!\n\n"
         f"Selamat datang di <b>Bot OTP Email Generator</b> 🤖\n\n"
-        f"📌 <b>Layanan yang Tersedia:</b>\n"
-        f"• 📧 <b>Gmail Premium</b> (Pool Resmi Smailpro)\n"
-        f"• 📬 <b>Outlook / Hotmail</b> (Pool Resmi Smailpro)\n\n"
+        f"📌 <b>Layanan Email Premium (100% Real Account):</b>\n"
+        f"• 📧 <b>Otp by Gmail</b> (1.700 Stok — Server 2 & 3 Premium)\n"
+        f"• 📬 <b>Otp by Outlook</b> (8.700 Stok — Server 2 Premium)\n"
+        f"• 📨 <b>Otp by Hotmail</b> (8.700 Stok — Server 2 Premium)\n\n"
+        f"✨ <i>Semua email adalah <b>Real Account</b> dan dijamin <b>100% selalu baru</b> (tidak pernah didaur ulang/dipakai sebelumnya).</i>\n\n"
         f"💰 <b>Ketentuan Tarif & Saldo:</b>\n"
         f"• Biaya per inbox/OTP masuk: <b>Rp {config.OTP_PRICE:,}</b>\n"
         f"• Saldo Anda hanya dipotong <b>JIKA OTP BERHASIL MASUK</b>!\n"
@@ -94,7 +97,12 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
     is_admin = user.id in config.ADMIN_IDS
-    service_title = "Gmail" if service == "gmail" else "Outlook"
+    if service == "gmail":
+        service_title = "Gmail (1.700 Stok — Server 2 & 3)"
+    elif service == "hotmail":
+        service_title = "Hotmail (8.700 Stok — Server 2)"
+    else:
+        service_title = "Outlook (8.700 Stok — Server 2)"
 
     # Check minimum balance (Bypassed for Admin - Unlimited Balance)
     if not is_admin and db_user["balance"] < config.OTP_PRICE:
@@ -173,11 +181,13 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         cost_info = "Gratis 👑 (Admin Unlimited)" if is_admin else f"Rp {config.OTP_PRICE:,} <i>(Hanya dipotong saat OTP masuk)</i>"
 
         order_text = (
-            f"✨ <b>EMAIL {service_title.upper()} BERHASIL DIBUAT!</b> ✨\n\n"
+            f"✨ <b>EMAIL {service.upper()} REAL ACCOUNT BERHASIL DIBUAT!</b> ✨\n\n"
             f"📧 <b>Email:</b> <code>{email_address}</code>\n"
             f"<i>(Klik alamat di atas untuk otomatis menyalin)</i>\n\n"
             f"🆔 <b>ID Order:</b> <code>#{order_id}</code>\n"
-            f"🏷️ <b>Layanan:</b> {service_title} Premium\n"
+            f"🏷️ <b>Layanan:</b> {service_title}\n"
+            f"🔒 <b>Tipe Akun:</b> Real Account (Bukan Alias)\n"
+            f"🛡️ <b>Status:</b> 100% Baru & Unik (Anti-Duplikat)\n"
             f"💰 <b>Biaya:</b> {cost_info}\n"
             f"⏱️ <b>Masa Aktif:</b> 15 - 20 Menit\n\n"
             f"📌 <b>Petunjuk:</b>\n"
@@ -865,10 +875,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # Main Menu routing
-    if text == "📧 Pesan OTP Gmail":
+    if text.startswith("📧 Otp by Gmail") or text == "📧 Pesan OTP Gmail":
         await handle_order_request(update, context, service="gmail")
-    elif text == "📬 Pesan OTP Outlook":
+    elif text.startswith("📬 Otp by Outlook") or text == "📬 Pesan OTP Outlook":
         await handle_order_request(update, context, service="outlook")
+    elif text.startswith("📨 Otp by Hotmail") or text == "📨 Pesan OTP Hotmail":
+        await handle_order_request(update, context, service="hotmail")
     elif text == "💰 Top Up Saldo":
         await topup_menu_handler(update, context)
     elif text == "👤 Profil & Saldo":

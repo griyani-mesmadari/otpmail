@@ -155,6 +155,16 @@ class Database:
             return new_balance
 
     # ================= ORDER METHODS =================
+    def is_email_used(self, email_address: str) -> bool:
+        """Checks if the email has ever been generated before in any order."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM orders WHERE LOWER(TRIM(email_address)) = LOWER(TRIM(?)) LIMIT 1",
+                (email_address,)
+            )
+            return cursor.fetchone() is not None
+
     def create_order(self, user_id: int, service: str, email_address: str, email_key: str = None, email_timestamp: int = None, cost: int = 200) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()
