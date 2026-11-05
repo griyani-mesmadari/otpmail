@@ -238,7 +238,7 @@ class SmailProEngine:
 
     async def check_inbox(self, email_address: str, key: str = "", timestamp: int = 0) -> Dict[str, Any]:
         """
-        Polls inbox for the given email.
+        Polls inbox for the given email using SmailPro + Sonjj API pipeline.
         Returns:
         {
             "success": bool,
@@ -260,85 +260,122 @@ class SmailProEngine:
             
             logger.info("Checking inbox for %s...", email_address)
 
+            # Determine service route
+            domain = email_address.split("@")[-1].lower() if "@" in email_address else ""
+            if "gmail" in domain:
+                service_path = "temp_gmail"
+            elif "outlook" in domain or "hotmail" in domain:
+                service_path = "temp_outlook"
+            else:
+                service_path = "temp_email"
+
             try:
-                # 1. Fetch inbox list via page evaluate
+                # Execute full inbox check inside browser context (carries all auth cookies & avoids CORS)
                 inbox_result = await self.page.evaluate('''async (param) => {
+                    // Step 1: Request payload from /app/inbox
                     const body = [{
                         address: param.address,
                         timestamp: param.timestamp || Math.floor(Date.now() / 1000),
                         key: param.key || ''
                     }];
 
-                    const response = await fetch('/app/inbox', {
+                    const inboxResp = await fetch('/app/inbox', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(body)
                     });
 
-                    if (!response.ok) {
-                        return { success: false, error: 'HTTP ' + response.status };
+                    if (!inboxResp.ok) {
+                        return { success: false, error: 'HTTP ' + inboxResp.status };
                     }
 
-                    const data = await response.json();
-                    return { success: true, data: data };
-                }''', {"address": email_address, "key": key, "timestamp": timestamp})
+                    const inboxData = await inboxResp.json();
+                    if (!Array.isArray(inboxData) || inboxData.length === 0) {
+                        return { success: true, messages: [] };
+                    }
+
+                    const payload = inboxData[0]?.payload;
+                    if (!payload) {
+                        return { success: true, messages: [] };
+                    }
+
+                    // Step 2: Fetch message list from api.sonjj.com
+                    const sonjjInboxUrl = `https://api.sonjj.com/v1/${param.service}/inbox?payload=${encodeURIComponent(payload)}`;
+                    const sonjjResp = await fetch(sonjjInboxUrl);
+                    if (!sonjjResp.ok) {
+                        return { success: false, error: 'Sonjj HTTP ' + sonjjResp.status };
+                    }
+
+                    const sonjjData = await sonjjResp.json();
+                    const rawMessages = sonjjData?.messages || sonjjData?.data?.messages || [];
+
+                    if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
+                        return { success: true, messages: [] };
+                    }
+
+                    // Step 3: Fetch body for the messages
+                    const messagesWithBody = [];
+                    for (const m of rawMessages) {
+                        const mid = m.mid || m.id;
+                        let bodyText = m.body || '';
+
+                        if (mid && !bodyText) {
+                            try {
+                                const msgUrl = `https://api.sonjj.com/v1/${param.service}/message?payload=${encodeURIComponent(payload)}&mid=${encodeURIComponent(mid)}`;
+                                const msgResp = await fetch(msgUrl);
+                                if (msgResp.ok) {
+                                    const msgData = await msgResp.json();
+                                    bodyText = msgData?.body || msgData?.data?.body || '';
+                                }
+                            } catch (e) {
+                                console.error('Error fetching body for mid:', mid, e);
+                            }
+                        }
+
+                        messagesWithBody.push({
+                            mid: mid,
+                            sender: m.textFrom || m.from || m.sender || '',
+                            subject: m.textSubject || m.subject || '',
+                            date: m.textDate || m.date || '',
+                            body: bodyText
+                        });
+                    }
+
+                    return { success: true, messages: messagesWithBody };
+                }''', {
+                    "address": email_address,
+                    "key": key,
+                    "timestamp": timestamp,
+                    "service": service_path
+                })
 
                 if not inbox_result.get("success"):
                     logger.warning("Inbox request failed: %s", inbox_result.get("error"))
                     return {"success": False, "has_messages": False, "messages": [], "error": inbox_result.get("error")}
 
-                data = inbox_result.get("data", [])
-                messages = []
-                
-                # Smailpro returns array of email objects or messages
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict) and item.get("messages"):
-                            messages.extend(item.get("messages"))
-                        elif isinstance(item, dict) and item.get("mid"):
-                            messages.append(item)
-
-                if not messages:
+                raw_messages = inbox_result.get("messages", [])
+                if not raw_messages:
+                    logger.info("No messages found for %s", email_address)
                     return {"success": True, "has_messages": False, "messages": []}
 
-                logger.info("Found %d incoming message(s) for %s!", len(messages), email_address)
+                logger.info("Found %d incoming message(s) for %s!", len(raw_messages), email_address)
 
                 parsed_messages = []
-                for msg in messages:
-                    mid = msg.get("mid")
-                    sender = msg.get("from") or msg.get("sender") or "Tidak diketahui"
+                for msg in raw_messages:
+                    sender = msg.get("sender") or "Tidak Diketahui"
                     subject = msg.get("subject") or "(Tanpa Subjek)"
-                    
-                    # Fetch message content
-                    body_content = ""
-                    if mid:
-                        try:
-                            body_content = await self.page.evaluate('''async (p) => {
-                                const response = await fetch(`/app/message?email=${encodeURIComponent(p.email)}&mid=${encodeURIComponent(p.mid)}`, {
-                                    method: 'GET',
-                                    headers: { 'Content-Type': 'application/json' }
-                                });
-                                if (response.ok) {
-                                    return await response.text();
-                                }
-                                return '';
-                            }''', {"email": email_address, "mid": mid})
-                        except Exception as e:
-                            logger.warning("Could not fetch body for message %s: %s", mid, e)
-                            body_content = msg.get("snippet") or msg.get("text") or ""
+                    raw_body = msg.get("body") or ""
+                    clean_body = self.clean_html(raw_body) if raw_body else ""
 
-                    # Extract OTP
-                    combined_text = f"{subject}\n{body_content}"
+                    # Extract OTP from subject + body
+                    combined_text = f"{subject}\n{clean_body}"
                     otp_code = self.extract_otp(combined_text)
 
-                    # Clean html snippet if any
-                    clean_body = self.clean_html(body_content) if body_content else ""
-
                     parsed_messages.append({
-                        "mid": mid,
-                        "sender": sender,
-                        "subject": subject,
-                        "body": clean_body[:500],  # snippet
+                        "mid": msg.get("mid"),
+                        "sender": sender.strip(),
+                        "subject": subject.strip(),
+                        "body": clean_body[:500],
                         "otp_code": otp_code
                     })
 
@@ -349,7 +386,7 @@ class SmailProEngine:
                 }
 
             except Exception as e:
-                logger.error("Error checking inbox: %s", e)
+                logger.error("Error checking inbox: %s", e, exc_info=True)
                 return {"success": False, "has_messages": False, "messages": [], "error": str(e)}
 
     @staticmethod
