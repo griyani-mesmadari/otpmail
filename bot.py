@@ -57,6 +57,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
     is_admin = user.id in config.ADMIN_IDS
 
+    balance_display = "<b>Unlimited 👑 (Admin Bebas Biaya)</b>" if is_admin else f"<code>Rp {db_user['balance']:,}</code>"
+
     welcome_text = (
         f"👋 Halo, <b>{user.first_name}</b>!\n\n"
         f"Selamat datang di <b>Bot OTP Email Generator</b> 🤖\n\n"
@@ -67,7 +69,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Biaya per inbox/OTP masuk: <b>Rp {config.OTP_PRICE:,}</b>\n"
         f"• Saldo Anda hanya dipotong <b>JIKA OTP BERHASIL MASUK</b>!\n"
         f"• Minimal Top Up: <b>Rp {config.MIN_TOPUP:,}</b>\n\n"
-        f"💳 <b>Saldo Anda Saat Ini:</b> <code>Rp {db_user['balance']:,}</code>\n\n"
+        f"💳 <b>Saldo Anda Saat Ini:</b> {balance_display}\n\n"
         f"Silakan pilih menu di bawah ini untuk memulai:"
     )
 
@@ -83,10 +85,11 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
     """Handles ordering Gmail or Outlook email."""
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
+    is_admin = user.id in config.ADMIN_IDS
     service_title = "Gmail" if service == "gmail" else "Outlook"
 
-    # Check minimum balance
-    if db_user["balance"] < config.OTP_PRICE:
+    # Check minimum balance (Bypassed for Admin - Unlimited Balance)
+    if not is_admin and db_user["balance"] < config.OTP_PRICE:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💰 Top Up Saldo Sekarang", callback_data="btn_topup")]
         ])
@@ -142,14 +145,15 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         email_key = result.get("key", "")
         email_timestamp = result.get("timestamp", int(datetime.now().timestamp()))
 
-        # Register order in DB
+        # Register order in DB (Admin has 0 cost)
+        order_cost = 0 if is_admin else config.OTP_PRICE
         order_id = db.create_order(
             user_id=user.id,
             service=service,
             email_address=email_address,
             email_key=email_key,
             email_timestamp=email_timestamp,
-            cost=config.OTP_PRICE
+            cost=order_cost
         )
 
         keyboard = InlineKeyboardMarkup([
@@ -158,13 +162,15 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("❌ Batalkan Order", callback_data=f"cancel_order_{order_id}")]
         ])
 
+        cost_info = "Gratis 👑 (Admin Unlimited)" if is_admin else f"Rp {config.OTP_PRICE:,} <i>(Hanya dipotong saat OTP masuk)</i>"
+
         order_text = (
             f"✨ <b>EMAIL {service_title.upper()} BERHASIL DIBUAT!</b> ✨\n\n"
             f"📧 <b>Email:</b> <code>{email_address}</code>\n"
             f"<i>(Klik alamat di atas untuk otomatis menyalin)</i>\n\n"
             f"🆔 <b>ID Order:</b> <code>#{order_id}</code>\n"
             f"🏷️ <b>Layanan:</b> {service_title} Premium\n"
-            f"💰 <b>Biaya:</b> Rp {config.OTP_PRICE:,} <i>(Hanya dipotong saat OTP masuk)</i>\n"
+            f"💰 <b>Biaya:</b> {cost_info}\n"
             f"⏱️ <b>Masa Aktif:</b> 15 - 20 Menit\n\n"
             f"📌 <b>Petunjuk:</b>\n"
             f"1. Gunakan email di atas pada aplikasi / situs yang ingin Anda daftarkan.\n"
@@ -252,17 +258,23 @@ async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     subject = msg.get("subject") or "Tanpa Subjek"
     body_snippet = msg.get("body") or ""
 
-    # Deduct balance
-    try:
-        new_balance = db.update_balance(
-            user_id=user_id,
-            amount=-order["cost"],
-            tx_type="otp_deduct",
-            description=f"OTP masuk #{order_id} ({email_address})"
-        )
-    except ValueError:
-        # In case balance went negative
-        new_balance = 0
+    # Deduct balance (Admin has free unlimited access)
+    is_admin = user_id in config.ADMIN_IDS
+    if is_admin:
+        new_balance_text = "Unlimited 👑 (Admin)"
+        cost_text = "Rp 0 (Gratis Admin)"
+    else:
+        try:
+            new_balance = db.update_balance(
+                user_id=user_id,
+                amount=-order["cost"],
+                tx_type="otp_deduct",
+                description=f"OTP masuk #{order_id} ({email_address})"
+            )
+            new_balance_text = f"Rp {new_balance:,}"
+        except ValueError:
+            new_balance_text = "Rp 0"
+        cost_text = f"Rp {order['cost']:,} (Terpotong)"
 
     # Mark completed in DB
     db.complete_order(order_id, otp_code=otp_code or "TERKIRIM", sender=sender, subject=subject)
@@ -284,8 +296,8 @@ async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         f"<i>(Klik kode di atas untuk otomatis menyalin)</i>\n\n"
         f"📄 <b>Cuplikan Pesan:</b>\n"
         f"<blockquote>{body_snippet[:350]}</blockquote>\n\n"
-        f"💰 <b>Biaya:</b> <code>Rp {order['cost']:,}</code> (Terpotong)\n"
-        f"💳 <b>Sisa Saldo Anda:</b> <code>Rp {new_balance:,}</code>"
+        f"💰 <b>Biaya:</b> <code>{cost_text}</code>\n"
+        f"💳 <b>Sisa Saldo Anda:</b> <code>{new_balance_text}</code>"
     )
 
     await query.message.reply_text(
@@ -345,17 +357,24 @@ async def run_auto_poll(order_id: int, context: ContextTypes.DEFAULT_TYPE, statu
                 subject = msg.get("subject") or "Tanpa Subjek"
                 body_snippet = msg.get("body") or ""
 
-                # Deduct balance
+                # Deduct balance (Admin has free unlimited access)
                 user_id = order["user_id"]
-                try:
-                    new_balance = db.update_balance(
-                        user_id=user_id,
-                        amount=-order["cost"],
-                        tx_type="otp_deduct",
-                        description=f"Auto-poll OTP #{order_id} ({order['email_address']})"
-                    )
-                except ValueError:
-                    new_balance = 0
+                is_admin = user_id in config.ADMIN_IDS
+                if is_admin:
+                    new_balance_text = "Unlimited 👑 (Admin)"
+                    cost_text = "Rp 0 (Gratis Admin)"
+                else:
+                    try:
+                        new_balance = db.update_balance(
+                            user_id=user_id,
+                            amount=-order["cost"],
+                            tx_type="otp_deduct",
+                            description=f"Auto-poll OTP #{order_id} ({order['email_address']})"
+                        )
+                        new_balance_text = f"Rp {new_balance:,}"
+                    except ValueError:
+                        new_balance_text = "Rp 0"
+                    cost_text = f"Rp {order['cost']:,} (Terpotong)"
 
                 db.complete_order(order_id, otp_code=otp_code or "TERKIRIM", sender=sender, subject=subject)
 
@@ -368,8 +387,8 @@ async def run_auto_poll(order_id: int, context: ContextTypes.DEFAULT_TYPE, statu
                     f"🔑 <b>KODE OTP:</b> 👉 {otp_highlight} 👈\n\n"
                     f"📄 <b>Cuplikan Pesan:</b>\n"
                     f"<blockquote>{body_snippet[:350]}</blockquote>\n\n"
-                    f"💰 <b>Biaya:</b> <code>Rp {order['cost']:,}</code> (Terpotong)\n"
-                    f"💳 <b>Sisa Saldo Anda:</b> <code>Rp {new_balance:,}</code>"
+                    f"💰 <b>Biaya:</b> <code>{cost_text}</code>\n"
+                    f"💳 <b>Sisa Saldo Anda:</b> <code>{new_balance_text}</code>"
                 )
 
                 await context.bot.send_message(
@@ -655,18 +674,21 @@ async def admin_topup_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
+    is_admin = user.id in config.ADMIN_IDS
     active_order = db.get_active_order_by_user(user.id)
 
     active_info = "Tidak ada"
     if active_order:
         active_info = f"<code>{active_order['email_address']}</code> ({active_order['service'].upper()})"
 
+    balance_display = "<b>Unlimited 👑 (Admin Bebas Biaya)</b>" if is_admin else f"<b>Rp {db_user['balance']:,}</b>"
+
     text = (
         f"👤 <b>PROFIL PENGGUNA</b>\n\n"
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"👤 <b>Nama:</b> {user.first_name}\n"
         f"🏷️ <b>Username:</b> @{user.username or '-'}\n\n"
-        f"💰 <b>Saldo Tersedia:</b> <b>Rp {db_user['balance']:,}</b>\n"
+        f"💰 <b>Saldo Tersedia:</b> {balance_display}\n"
         f"💸 <b>Total Pemakaian:</b> Rp {db_user['total_spent']:,}\n"
         f"📬 <b>Order Aktif:</b> {active_info}\n\n"
         f"📅 <b>Terdaftar Sejak:</b> {db_user['created_at']}"
