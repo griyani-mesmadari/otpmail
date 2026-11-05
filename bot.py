@@ -926,12 +926,12 @@ async def cs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Pertanyaan seputar Layanan Email / OTP\n"
         f"• Request layanan atau stok khusus\n\n"
         f"Silakan langsung hubungi Admin / CS kami:\n"
-        f"👤 <b>Admin:</b> Hendra Setyawan (@hendraddr9)\n\n"
+        f"👤 <b>Admin:</b> Ramba Store (@rambasstore)\n\n"
         f"⏱️ <i>Pesan ini otomatis dihapus dalam 20 detik.</i>"
     )
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Chat Admin di Telegram", url="https://t.me/hendraddr9")]
+        [InlineKeyboardButton("💬 Chat Admin di Telegram", url="https://t.me/rambasstore")]
     ])
 
     msg = await (update.message or update.callback_query.message).reply_text(
