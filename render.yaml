@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: telegram-otp-bot
+    env: docker
+    plan: free
+    region: singapore
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: OTP_PRICE
+        value: 200
+      - key: MIN_TOPUP
+        value: 5000
+      - key: SMAILPRO_HEADLESS
+        value: true
+      - key: SMAILPRO_SESSION_B64
+        sync: false
+      - key: PAYMENT_DANA
+        value: 0812-3456-7890
+      - key: PAYMENT_GOPAY
+        value: 0812-3456-7890
+      - key: PAYMENT_OVO
+        value: 0812-3456-7890
+      - key: PAYMENT_BANK
+        value: BCA: 1234567890 a.n Nama Anda
+      - key: PAYMENT_QRIS_URL
+        value: ""
