@@ -573,34 +573,50 @@ async def topup_amount_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await show_payment_instructions(query.message, user_id, amount)
 
 
-async def show_payment_instructions(message_target, user_id: int, amount: int):
-    """Generates dynamic QRIS image and displays payment details."""
+async def show_payment_instructions(message_target, user_id: int, base_amount: int):
+    """Generates dynamic QRIS image with 3-digit unique code and displays payment details."""
+    import random
+
+    if base_amount < config.MIN_TOPUP:
+        base_amount = config.MIN_TOPUP
+
+    # Round base to thousands and generate 3-digit unique code (101 - 999)
+    base_thousands = (base_amount // 1000) * 1000
+    unique_code = random.randint(101, 999)
+    final_amount = base_thousands + unique_code
+
     user_topup_states[user_id] = {
         "step": "waiting_proof",
-        "amount": amount
+        "base_amount": base_thousands,
+        "unique_code": unique_code,
+        "amount": final_amount
     }
 
     caption = (
         f"💳 <b>PEMBAYARAN TOP UP VIA QRIS OTOMATIS</b>\n\n"
-        f"💰 <b>Nominal:</b> <code>Rp {amount:,}</code>\n"
+        f"💰 <b>Total Transfer:</b> <code>Rp {final_amount:,}</code>\n"
+        f"🔢 <b>Nominal Pokok:</b> Rp {base_thousands:,}\n"
+        f"🎯 <b>Kode Unik:</b> <code>+{unique_code}</code> <i>(Pembeda mutasi transfer Anda)</i>\n"
         f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n\n"
         f"⚡ <b>Keunggulan QRIS Ini:</b>\n"
-        f"Nominal <b>Rp {amount:,}</b> sudah otomatis terisi saat di-scan! Anda tidak perlu mengetikkan nominal secara manual.\n\n"
+        f"Nominal tepat <b>Rp {final_amount:,}</b> sudah otomatis terisi saat di-scan! Anda tidak perlu mengetikkan nominal secara manual.\n"
+        f"<i>💡 Saldo yang masuk ke akun Anda adalah <b>Rp {final_amount:,}</b> (penuh tanpa potongan)!</i>\n\n"
         f"📱 <b>Cara Bayar:</b>\n"
         f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (DANA, GoPay, OVO, ShopeePay).\n"
         f"2. Scan / upload QR Code di atas.\n"
-        f"3. Pastikan nominal tertera tepat <b>Rp {amount:,}</b> lalu selesaikan pembayaran.\n"
+        f"3. Pastikan nominal tertera tepat <b>Rp {final_amount:,}</b> lalu selesaikan pembayaran.\n"
         f"4. 📸 <b>KIRIM FOTO / SCREENSHOT BUKTI TRANSFER</b> langsung ke chat bot ini.\n\n"
         f"💡 <i>Metode Alternatif (Transfer Manual):</i>\n"
         f"• DANA: <code>{config.PAYMENT_DANA}</code>\n"
         f"• GOPAY: <code>{config.PAYMENT_GOPAY}</code>\n"
         f"• OVO: <code>{config.PAYMENT_OVO}</code>\n"
-        f"• BANK: <code>{config.PAYMENT_BANK}</code>"
+        f"• BANK: <code>{config.PAYMENT_BANK}</code>\n\n"
+        f"⚠️ <i>Pastikan mentransfer tepat <b>Rp {final_amount:,}</b> agar admin dapat langsung mengenali mutasi transfer Anda.</i>"
     )
 
     try:
-        # Generate dynamic QRIS PNG in memory
-        qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, amount)
+        # Generate dynamic QRIS PNG in memory with final_amount
+        qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, final_amount)
         qr_msg = await message_target.reply_photo(
             photo=qr_bytes,
             caption=caption,
@@ -625,6 +641,8 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     amount = state.get("amount", config.MIN_TOPUP)
+    unique_code = state.get("unique_code", 0)
+    base_amount = state.get("base_amount", amount)
     photo = update.message.photo[-1]  # Highest resolution photo
     file_id = photo.file_id
 
@@ -637,7 +655,7 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         f"✅ <b>Bukti transfer berhasil diterima!</b>\n\n"
         f"🆔 ID Top Up: <code>#{topup_id}</code>\n"
-        f"💰 Nominal: <code>Rp {amount:,}</code>\n\n"
+        f"💰 Nominal Transfer: <code>Rp {amount:,}</code> (Kode Unik: {unique_code})\n\n"
         f"Permohonan top up Anda sedang ditinjau oleh Admin. Anda akan menerima notifikasi otomatis begitu saldo disetujui.",
         parse_mode=ParseMode.HTML
     )
@@ -654,9 +672,10 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🔔 <b>PERMOHONAN TOP UP BARU!</b>\n\n"
         f"🆔 <b>ID Top Up:</b> <code>#{topup_id}</code>\n"
         f"👤 <b>Pengirim:</b> {user.first_name} (@{user.username or '-'}) [<code>{user_id}</code>]\n"
-        f"💰 <b>Nominal:</b> <b>Rp {amount:,}</b>\n"
+        f"💰 <b>Total Transfer:</b> <b>Rp {amount:,}</b>\n"
+        f"🔢 <b>Kode Unik:</b> <code>{unique_code}</code> (Pokok: Rp {base_amount:,})\n"
         f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        f"Periksa bukti transfer di atas dan klik konfirmasi di bawah:"
+        f"👉 Cocokkan mutasi rekening Anda dengan nominal <b>Rp {amount:,}</b> lalu klik tombol di bawah:"
     )
 
     for admin_id in config.ADMIN_IDS:
