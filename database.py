@@ -317,6 +317,115 @@ class Database:
                 "total_user_balance": user_balance
             }
 
+    def get_service_analytics(self) -> Dict[str, Any]:
+        """
+        Analyzes which email services are ordered most and which target services/senders
+        the OTPs are actually being used for (e.g. WhatsApp, TikTok, Google, etc.).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # 1. Orders by email service (Gmail, Outlook, Hotmail)
+            cursor.execute("""
+                SELECT service, 
+                       COUNT(*) as total_orders,
+                       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_orders
+                FROM orders
+                GROUP BY service
+                ORDER BY total_orders DESC
+            """)
+            service_counts = [dict(r) for r in cursor.fetchall()]
+
+            # 2. Senders / Platforms breakdown for completed orders
+            cursor.execute("""
+                SELECT TRIM(otp_sender) as sender, COUNT(*) as count
+                FROM orders
+                WHERE status = 'completed' AND otp_sender IS NOT NULL AND TRIM(otp_sender) != ''
+                GROUP BY TRIM(otp_sender)
+                ORDER BY count DESC
+                LIMIT 15
+            """)
+            top_senders = [dict(r) for r in cursor.fetchall()]
+
+            # 3. Common target platform keyword detection from sender & subject
+            cursor.execute("""
+                SELECT otp_sender, otp_subject
+                FROM orders
+                WHERE status = 'completed'
+            """)
+            all_completed = cursor.fetchall()
+
+            platforms = {
+                "TikTok": 0, "WhatsApp": 0, "Telegram": 0, "Google": 0,
+                "Shopee": 0, "Tokopedia": 0, "Facebook": 0, "Instagram": 0,
+                "Twitter / X": 0, "OpenAI / ChatGPT": 0, "Discord": 0,
+                "Netflix": 0, "Steam": 0, "Microsoft": 0, "Lain-lain": 0
+            }
+
+            for row in all_completed:
+                text = f"{row['otp_sender'] or ''} {row['otp_subject'] or ''}".lower()
+                matched = False
+                for p in platforms:
+                    if p == "Lain-lain":
+                        continue
+                    keywords = p.lower().split(" / ")
+                    if any(k in text for k in keywords):
+                        platforms[p] += 1
+                        matched = True
+                        break
+                if not matched:
+                    platforms["Lain-lain"] += 1
+
+            sorted_platforms = [
+                {"platform": k, "count": v}
+                for k, v in sorted(platforms.items(), key=lambda x: x[1], reverse=True)
+                if v > 0
+            ]
+
+            return {
+                "services": service_counts,
+                "top_senders": top_senders,
+                "top_platforms": sorted_platforms
+            }
+
+    def get_top_users_analytics(self, limit: int = 10) -> Dict[str, Any]:
+        """
+        Returns top users by OTP usage (most OTPs received / spent)
+        and top users by Top Up (highest total topup & frequency).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Top OTP users
+            cursor.execute("""
+                SELECT u.user_id, u.username, u.first_name, u.total_spent,
+                       COUNT(o.id) as otp_count
+                FROM users u
+                LEFT JOIN orders o ON u.user_id = o.user_id AND o.status = 'completed'
+                GROUP BY u.user_id
+                ORDER BY otp_count DESC, u.total_spent DESC
+                LIMIT ?
+            """, (limit,))
+            top_otp_users = [dict(r) for r in cursor.fetchall()]
+
+            # Top Topup users
+            cursor.execute("""
+                SELECT u.user_id, u.username, u.first_name,
+                       COUNT(t.id) as topup_count,
+                       SUM(t.amount) as total_topup_amount
+                FROM users u
+                JOIN topups t ON u.user_id = t.user_id AND t.status = 'approved'
+                GROUP BY u.user_id
+                ORDER BY total_topup_amount DESC, topup_count DESC
+                LIMIT ?
+            """, (limit,))
+            top_topup_users = [dict(r) for r in cursor.fetchall()]
+
+            return {
+                "top_otp_users": top_otp_users,
+                "top_topup_users": top_topup_users
+            }
+
     def get_all_user_ids(self) -> List[int]:
         with self.get_connection() as conn:
             cursor = conn.cursor()

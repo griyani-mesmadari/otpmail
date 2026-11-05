@@ -66,12 +66,13 @@ def schedule_delete(message, delay: int = 10):
 
 
 def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    """Returns persistent main menu reply keyboard."""
+    """Returns persistent main menu reply keyboard with expanded user features."""
     buttons = [
         [KeyboardButton("📧 Otp by Gmail ( 1700 stok )")],
         [KeyboardButton("📬 Otp by Outlook ( 8700 stok )"), KeyboardButton("📨 Otp by Hotmail ( 8700 stok )")],
         [KeyboardButton("💰 Top Up Saldo"), KeyboardButton("👤 Profil & Saldo")],
-        [KeyboardButton("📖 Riwayat Order"), KeyboardButton("ℹ️ Bantuan")]
+        [KeyboardButton("📊 Cek Stok Server"), KeyboardButton("📖 Riwayat Order")],
+        [KeyboardButton("🏷️ Tarif & Info"), KeyboardButton("💬 Hubungi CS / Admin")]
     ]
     if is_admin:
         buttons.append([KeyboardButton("⚙️ Panel Admin")])
@@ -858,6 +859,104 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     schedule_delete(help_msg, delay=15)
 
 
+async def stok_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
+    text = (
+        f"📊 <b>STATUS LIVE STOK EMAIL REAL ACCOUNT</b>\n\n"
+        f"🟢 <b>Server Gmail:</b>\n"
+        f"• Server-2 & Server-3 (Premium): <b>~1.756 Akun</b>\n"
+        f"• Tipe: Random Real Account (@gmail.com)\n"
+        f"• Status: 100% Siap Digunakan\n\n"
+        f"🟢 <b>Server Outlook:</b>\n"
+        f"• Server-2 (Premium): <b>~8.708 Akun</b>\n"
+        f"• Tipe: Microsoft Real Account (@outlook.com)\n"
+        f"• Status: 100% Siap Digunakan\n\n"
+        f"🟢 <b>Server Hotmail:</b>\n"
+        f"• Server-2 (Premium): <b>~8.708 Akun</b>\n"
+        f"• Tipe: Microsoft Real Account (@hotmail.com)\n"
+        f"• Status: 100% Siap Digunakan\n\n"
+        f"🛡️ <b>Jaminan Anti-Duplikat:</b> <b>AKTIF</b>\n"
+        f"<i>Setiap email yang Anda generate dijamin 100% baru dan belum pernah dipakai sebelumnya.</i>\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik.</i>"
+    )
+
+    msg = await (update.message or update.callback_query.message).reply_text(
+        text, parse_mode=ParseMode.HTML
+    )
+    schedule_delete(msg, delay=15)
+
+
+async def tarif_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
+    text = (
+        f"🏷️ <b>DAFTAR TARIF & KETENTUAN LAYANAN</b>\n\n"
+        f"💰 <b>Biaya per OTP:</b> <b>Rp {config.OTP_PRICE:,}</b>\n"
+        f"🛡️ <b>Garansi Adil (Fair Billing):</b>\n"
+        f"Saldo Anda <b>HANYA DIPOTONG</b> saat email / kode OTP berhasil masuk ke inbox. Jika OTP tidak masuk atau order dibatalkan, saldo Anda <b>Rp 0 (TIDAK DIPOTONG)</b>!\n\n"
+        f"💳 <b>Ketentuan Top Up Saldo:</b>\n"
+        f"• Minimal Top Up: <b>Rp {config.MIN_TOPUP:,}</b>\n"
+        f"• Metode Pembayaran: <b>QRIS Otomatis Dinamis</b>\n"
+        f"• Mendukung Semua Bank & E-Wallet: BCA, Mandiri, BRI, BNI, Jago, DANA, GoPay, OVO, ShopeePay\n"
+        f"• <b>Kode Unik 3 Digit:</b> Otomatis ditambahkan di belakang nominal agar mutasi Anda langsung diverifikasi cepat oleh Admin.\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik.</i>"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Top Up Saldo Sekarang", callback_data="btn_topup")]
+    ])
+
+    msg = await (update.message or update.callback_query.message).reply_text(
+        text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+    )
+    schedule_delete(msg, delay=15)
+
+
+async def cs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
+    text = (
+        f"💬 <b>PUSAT BANTUAN & CUSTOMER SERVICE</b>\n\n"
+        f"Jika Anda membutuhkan bantuan terkait:\n"
+        f"• Konfirmasi Top Up Saldo / Masalah Pembayaran\n"
+        f"• Pertanyaan seputar Layanan Email / OTP\n"
+        f"• Request layanan atau stok khusus\n\n"
+        f"Silakan langsung hubungi Admin / CS kami:\n"
+        f"👤 <b>Admin:</b> Hendra Setyawan (@hendraddr9)\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 20 detik.</i>"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Chat Admin di Telegram", url="https://t.me/hendraddr9")]
+    ])
+
+    msg = await (update.message or update.callback_query.message).reply_text(
+        text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+    )
+    schedule_delete(msg, delay=20)
+
+
+async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📧 Pesan Gmail (Server 2 & 3)", callback_data="btn_ord_gmail")],
+        [InlineKeyboardButton("📬 Pesan Outlook (Server 2)", callback_data="btn_ord_outlook")],
+        [InlineKeyboardButton("📨 Pesan Hotmail (Server 2)", callback_data="btn_ord_hotmail")]
+    ])
+    msg = await update.message.reply_text(
+        "⚡ <b>PILIH LAYANAN EMAIL OTP REAL ACCOUNT:</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+    schedule_delete(msg, delay=20)
+
+
 # ================= ADMIN DASHBOARD & COMMANDS =================
 async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -880,13 +979,114 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🌐 <b>Status Server Gmail, Outlook, Hotmail:</b>\n"
         f"• Status Premium: <b>{premium_icon}</b>\n"
         f"• Logged In: <b>{session_status.get('isLoggedIn')}</b>\n\n"
-        f"🛠️ <b>Perintah Admin:</b>\n"
-        f"• <code>/tambahsaldo &lt;user_id&gt; &lt;jumlah&gt;</code>\n"
-        f"• <code>/kurangsaldo &lt;user_id&gt; &lt;jumlah&gt;</code>\n"
-        f"• <code>/broadcast &lt;pesan&gt;</code>"
+        f"🛠️ <b>Fitur Analisis & Kontrol Admin:</b>\n"
+        f"Klik tombol menu di bawah untuk melihat rincian analytics kebutuhan user & leaderboard:"
     )
 
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Analisis Kebutuhan OTP", callback_data="adm_analytics"),
+            InlineKeyboardButton("🏆 Top User & Top Up", callback_data="adm_topusers")
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh Status", callback_data="adm_refresh_panel")
+        ]
+    ])
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def admin_analytics_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+
+    analytics = db.get_service_analytics()
+
+    service_lines = []
+    for s in analytics["services"]:
+        srv_name = s["service"].upper()
+        service_lines.append(f"• <b>{srv_name}</b>: {s['total_orders']} order ({s['completed_orders']} sukses OTP)")
+    service_text = "\n".join(service_lines) if service_lines else "<i>Belum ada order</i>"
+
+    platform_lines = []
+    for idx, p in enumerate(analytics["top_platforms"], 1):
+        platform_lines.append(f"{idx}. <b>{p['platform']}</b>: <code>{p['count']} OTP</code>")
+    platform_text = "\n".join(platform_lines) if platform_lines else "<i>Belum ada data platform</i>"
+
+    sender_lines = []
+    for idx, snd in enumerate(analytics["top_senders"][:8], 1):
+        sender_lines.append(f"{idx}. <code>{snd['sender']}</code> ({snd['count']}x)")
+    sender_text = "\n".join(sender_lines) if sender_lines else "<i>Belum ada data pengirim</i>"
+
+    text = (
+        f"📊 <b>ANALISIS KEBUTUHAN LAYANAN OTP USER</b>\n\n"
+        f"📦 <b>Pemakaian Email per Server:</b>\n"
+        f"{service_text}\n\n"
+        f"🎯 <b>Platform / Layanan yang Paling Banyak Didaftarkan User:</b>\n"
+        f"{platform_text}\n\n"
+        f"📬 <b>Top Pengirim (Sender OTP Terbanyak):</b>\n"
+        f"{sender_text}\n\n"
+        f"💡 <i>Gunakan data ini untuk mengetahui tren aplikasi apa yang paling banyak diminati oleh pembeli!</i>"
+    )
+
+    back_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Kembali ke Panel Admin", callback_data="adm_refresh_panel")]
+    ])
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+
+
+async def admin_topusers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+
+    data = db.get_top_users_analytics(limit=8)
+
+    otp_lines = []
+    for idx, u in enumerate(data["top_otp_users"], 1):
+        uname = f"@{u['username']}" if u.get("username") else u.get("first_name", "User")
+        otp_lines.append(
+            f"{idx}. 👤 <b>{uname}</b> [<code>{u['user_id']}</code>]\n"
+            f"   ↳ <b>{u['otp_count']}</b> OTP Sukses | Total Belanja: <code>Rp {u['total_spent']:,}</code>"
+        )
+    otp_text = "\n".join(otp_lines) if otp_lines else "<i>Belum ada transaksi OTP</i>"
+
+    topup_lines = []
+    for idx, u in enumerate(data["top_topup_users"], 1):
+        uname = f"@{u['username']}" if u.get("username") else u.get("first_name", "User")
+        topup_lines.append(
+            f"{idx}. 💎 <b>{uname}</b> [<code>{u['user_id']}</code>]\n"
+            f"   ↳ Total Top Up: <b>Rp {u['total_topup_amount']:,}</b> ({u['topup_count']}x transfer)"
+        )
+    topup_text = "\n".join(topup_lines) if topup_lines else "<i>Belum ada riwayat top up</i>"
+
+    text = (
+        f"🏆 <b>LEADERBOARD TOP USER & TOP UP</b>\n\n"
+        f"🔥 <b>Top Pengguna OTP Terbanyak:</b>\n"
+        f"{otp_text}\n\n"
+        f"💰 <b>Top Pengguna Top Up Terbesar:</b>\n"
+        f"{topup_text}"
+    )
+
+    back_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Kembali ke Panel Admin", callback_data="adm_refresh_panel")]
+    ])
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard)
 
 
 async def cmd_tambahsaldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,8 +1177,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await topup_menu_handler(update, context)
     elif text == "👤 Profil & Saldo":
         await profile_handler(update, context)
+    elif text == "📊 Cek Stok Server":
+        await stok_handler(update, context)
     elif text == "📖 Riwayat Order":
         await history_handler(update, context)
+    elif text == "🏷️ Tarif & Info":
+        await tarif_handler(update, context)
+    elif text == "💬 Hubungi CS / Admin":
+        await cs_handler(update, context)
     elif text == "ℹ️ Bantuan":
         await help_handler(update, context)
     elif text == "⚙️ Panel Admin":
@@ -1019,9 +1225,28 @@ async def start_health_server():
 
 # ================= BOT INITIALIZATION & START =================
 async def post_init(application: Application):
-    """Initializes SmailPro engine and health check server on bot startup."""
+    """Initializes SmailPro engine, health check server, and bottom-left menu commands."""
     # Start web server for Render health check
     await start_health_server()
+
+    # Set bottom-left Menu Button commands
+    from telegram import BotCommand
+    commands = [
+        BotCommand("start", "Mulai bot & menu utama"),
+        BotCommand("order", "Pesan email OTP"),
+        BotCommand("topup", "Top up saldo (QRIS otomatis)"),
+        BotCommand("saldo", "Cek saldo & profil akun"),
+        BotCommand("stok", "Cek live stok server email"),
+        BotCommand("riwayat", "Riwayat 8 order terakhir"),
+        BotCommand("tarif", "Daftar tarif & ketentuan"),
+        BotCommand("cs", "Hubungi Customer Service"),
+        BotCommand("bantuan", "Panduan lengkap bot")
+    ]
+    try:
+        await application.bot.set_my_commands(commands)
+        logger.info("Standard Telegram bot commands menu registered successfully")
+    except Exception as e:
+        logger.warning("Could not set bot commands: %s", e)
     
     logger.info("Initializing SmailPro browser engine...")
     try:
@@ -1056,6 +1281,16 @@ def main():
 
     # Commands
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("order", order_command))
+    application.add_handler(CommandHandler("stok", stok_handler))
+    application.add_handler(CommandHandler("tarif", tarif_handler))
+    application.add_handler(CommandHandler("cs", cs_handler))
+    application.add_handler(CommandHandler("bantuan", help_handler))
+    application.add_handler(CommandHandler("saldo", profile_handler))
+    application.add_handler(CommandHandler("riwayat", history_handler))
+    application.add_handler(CommandHandler("topup", topup_menu_handler))
+    application.add_handler(CommandHandler("analytics", admin_analytics_handler))
+    application.add_handler(CommandHandler("topuser", admin_topusers_handler))
     application.add_handler(CommandHandler("tambahsaldo", cmd_tambahsaldo))
     application.add_handler(CommandHandler("kurangsaldo", cmd_kurangsaldo))
     application.add_handler(CommandHandler("broadcast", cmd_broadcast))
@@ -1071,6 +1306,12 @@ def main():
     application.add_handler(CallbackQueryHandler(history_handler, pattern=r"^btn_history$"))
     application.add_handler(CallbackQueryHandler(topup_amount_callback, pattern=r"^topup_amt_"))
     application.add_handler(CallbackQueryHandler(admin_topup_callback, pattern=r"^adm_"))
+    application.add_handler(CallbackQueryHandler(admin_analytics_handler, pattern=r"^adm_analytics$"))
+    application.add_handler(CallbackQueryHandler(admin_topusers_handler, pattern=r"^adm_topusers$"))
+    application.add_handler(CallbackQueryHandler(admin_panel_handler, pattern=r"^adm_refresh_panel$"))
+    application.add_handler(CallbackQueryHandler(lambda u, c: handle_order_request(u, c, "gmail"), pattern=r"^btn_ord_gmail$"))
+    application.add_handler(CallbackQueryHandler(lambda u, c: handle_order_request(u, c, "outlook"), pattern=r"^btn_ord_outlook$"))
+    application.add_handler(CallbackQueryHandler(lambda u, c: handle_order_request(u, c, "hotmail"), pattern=r"^btn_ord_hotmail$"))
 
     # Photos (payment receipts)
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_proof))
