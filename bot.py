@@ -24,6 +24,7 @@ from telegram.ext import (
 import config
 from database import db
 from smailpro_engine import smailpro
+from qris_helper import generate_qris_image_bytes
 
 # Logging Configuration
 logging.basicConfig(
@@ -484,29 +485,42 @@ async def topup_amount_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def show_payment_instructions(message_target, user_id: int, amount: int):
-    """Displays payment details and prompts user for receipt image."""
+    """Generates dynamic QRIS image and displays payment details."""
     user_topup_states[user_id] = {
         "step": "waiting_proof",
         "amount": amount
     }
 
-    qris_line = f"• <b>QRIS All Payment:</b> <a href='{config.PAYMENT_QRIS_URL}'>Klik Di Sini Untuk Buka QRIS</a>\n" if config.PAYMENT_QRIS_URL else ""
-
-    text = (
-        f"📋 <b>INSTRUKSI PEMBAYARAN TOP UP</b>\n\n"
-        f"💰 <b>Nominal Transfer:</b> <code>Rp {amount:,}</code>\n\n"
-        f"Silakan transfer tepat sesuai nominal ke salah satu rekening/e-wallet berikut:\n\n"
-        f"{qris_line}"
-        f"• <b>DANA:</b> <code>{config.PAYMENT_DANA}</code>\n"
-        f"• <b>GOPAY:</b> <code>{config.PAYMENT_GOPAY}</code>\n"
-        f"• <b>OVO:</b> <code>{config.PAYMENT_OVO}</code>\n"
-        f"• <b>BANK:</b> <code>{config.PAYMENT_BANK}</code>\n\n"
-        f"📸 <b>LANGKAH TERAKHIR:</b>\n"
-        f"Setelah melakukan transfer, silakan <b>KIRIM FOTO / SCREENSHOT BUKTI TRANSFER</b> langsung ke chat bot ini.\n\n"
-        f"<i>Admin akan segera memeriksa dan saldo Anda akan terisi otomatis begitu disetujui!</i>"
+    caption = (
+        f"💳 <b>PEMBAYARAN TOP UP VIA QRIS OTOMATIS</b>\n\n"
+        f"💰 <b>Nominal:</b> <code>Rp {amount:,}</code>\n"
+        f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n\n"
+        f"⚡ <b>Keunggulan QRIS Ini:</b>\n"
+        f"Nominal <b>Rp {amount:,}</b> sudah otomatis terisi saat di-scan! Anda tidak perlu mengetikkan nominal secara manual.\n\n"
+        f"📱 <b>Cara Bayar:</b>\n"
+        f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (DANA, GoPay, OVO, ShopeePay).\n"
+        f"2. Scan / upload QR Code di atas.\n"
+        f"3. Pastikan nominal tertera tepat <b>Rp {amount:,}</b> lalu selesaikan pembayaran.\n"
+        f"4. 📸 <b>KIRIM FOTO / SCREENSHOT BUKTI TRANSFER</b> langsung ke chat bot ini.\n\n"
+        f"💡 <i>Metode Alternatif (Transfer Manual):</i>\n"
+        f"• DANA: <code>{config.PAYMENT_DANA}</code>\n"
+        f"• GOPAY: <code>{config.PAYMENT_GOPAY}</code>\n"
+        f"• OVO: <code>{config.PAYMENT_OVO}</code>\n"
+        f"• BANK: <code>{config.PAYMENT_BANK}</code>"
     )
 
-    await message_target.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+    try:
+        # Generate dynamic QRIS PNG in memory
+        qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, amount)
+        await message_target.reply_photo(
+            photo=qr_bytes,
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error("Failed to generate QRIS photo: %s", e)
+        # Fallback to text if image generation encounters issue
+        await message_target.reply_text(caption, parse_mode=ParseMode.HTML)
 
 
 # ================= RECEIVE PROOF OF TRANSFER =================

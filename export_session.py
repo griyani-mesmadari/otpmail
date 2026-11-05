@@ -1,6 +1,14 @@
 import base64
 import json
+import sys
 import config
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 def export_session():
     print("=" * 65)
