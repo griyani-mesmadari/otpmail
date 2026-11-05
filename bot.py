@@ -97,7 +97,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 📧 <b>Otp by Gmail</b> (1.700 Stok — Server 2 & 3 Premium)\n"
         f"• 📬 <b>Otp by Outlook</b> (8.700 Stok — Server 2 Premium)\n"
         f"• 📨 <b>Otp by Hotmail</b> (8.700 Stok — Server 2 Premium)\n\n"
-        f"✨ <i>Semua email adalah <b>Real Account</b> dan dijamin <b>100% selalu baru</b> (tidak pernah didaur ulang/dipakai sebelumnya).</i>\n\n"
+        f"✨ <i>Semua email adalah <b>Real Account</b> dan dijamin <b>100% akan update terus stoknya berkala, gaskan !!</b></i>\n\n"
         f"💰 <b>Ketentuan Tarif & Saldo:</b>\n"
         f"• Biaya per inbox/OTP masuk: <b>Rp {config.OTP_PRICE:,}</b>\n"
         f"• Saldo Anda hanya dipotong <b>JIKA OTP BERHASIL MASUK</b>!\n"
