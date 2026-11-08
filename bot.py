@@ -3,7 +3,7 @@ import logging
 import re
 import sys
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 if sys.platform == "win32":
     try:
@@ -14,6 +14,7 @@ if sys.platform == "win32":
 
 from telegram import (
     Update,
+    Bot,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 user_topup_states: Dict[int, dict] = {}
 # Background auto-poll tracking: {order_id: asyncio.Task}
 active_polling_tasks: Dict[int, asyncio.Task] = {}
+# Global bot instance for Webhook callbacks
+telegram_bot: Optional[Bot] = None
 
 
 def schedule_delete(message, delay: int = 10):
@@ -577,7 +580,7 @@ async def topup_amount_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def show_payment_instructions(message_target, user_id: int, base_amount: int):
-    """Generates dynamic QRIS image with 3-digit unique code and displays payment details."""
+    """Generates dynamic QRIS image with 3-digit unique code, registers pending topup, and displays payment details."""
     import random
 
     if base_amount < config.MIN_TOPUP:
@@ -585,11 +588,23 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
 
     # Round base to thousands and generate 3-digit unique code (101 - 999)
     base_thousands = (base_amount // 1000) * 1000
+
+    # Ensure unique_code does not collide with any currently pending topup amount
+    pending_amounts = db.get_pending_topup_amounts()
+    attempts = 0
     unique_code = random.randint(101, 999)
     final_amount = base_thousands + unique_code
+    while final_amount in pending_amounts and attempts < 100:
+        unique_code = random.randint(101, 999)
+        final_amount = base_thousands + unique_code
+        attempts += 1
+
+    # Immediately register topup as pending in database for QRIS Hook automatic detection
+    topup_id = db.create_topup(user_id=user_id, amount=final_amount, proof_file_id="QRIS_AUTO_WAITING")
 
     user_topup_states[user_id] = {
         "step": "waiting_proof",
+        "topup_id": topup_id,
         "base_amount": base_thousands,
         "unique_code": unique_code,
         "amount": final_amount
@@ -599,22 +614,23 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
         f"💳 <b>PEMBAYARAN TOP UP VIA QRIS OTOMATIS</b>\n\n"
         f"💰 <b>Total Transfer:</b> <code>Rp {final_amount:,}</code>\n"
         f"🔢 <b>Nominal Pokok:</b> Rp {base_thousands:,}\n"
-        f"🎯 <b>Kode Unik:</b> <code>+{unique_code}</code> <i>(Pembeda mutasi transfer Anda)</i>\n"
+        f"🎯 <b>Kode Unik:</b> <code>+{unique_code}</code> <i>(Pembeda mutasi otomatis Anda)</i>\n"
         f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n\n"
-        f"⚡ <b>Keunggulan QRIS Ini:</b>\n"
-        f"Nominal tepat <b>Rp {final_amount:,}</b> sudah otomatis terisi saat di-scan! Anda tidak perlu mengetikkan nominal secara manual.\n"
-        f"<i>💡 Saldo yang masuk ke akun Anda adalah <b>Rp {final_amount:,}</b> (penuh tanpa potongan)!</i>\n\n"
-        f"📱 <b>Cara Bayar:</b>\n"
+        f"⚡ <b>AUTO-APPROVE AKTIF (QRIS HOOK):</b>\n"
+        f"• Saldo akan <b>LANGSUNG MASUK OTOMATIS</b> dalam hitungan detik setelah Anda menyelesaikan transfer!\n"
+        f"• Nominal tepat <b>Rp {final_amount:,}</b> sudah otomatis terisi saat scan QR Code.\n"
+        f"• Saldo yang masuk ke akun Anda adalah <b>Rp {final_amount:,}</b> (penuh tanpa potongan biaya admin)!\n\n"
+        f"📱 <b>Cara Pembayaran:</b>\n"
         f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (DANA, GoPay, OVO, ShopeePay).\n"
-        f"2. Scan / upload QR Code di atas.\n"
+        f"2. Scan / upload gambar QR Code di atas.\n"
         f"3. Pastikan nominal tertera tepat <b>Rp {final_amount:,}</b> lalu selesaikan pembayaran.\n"
-        f"4. 📸 <b>KIRIM FOTO / SCREENSHOT BUKTI TRANSFER</b> langsung ke chat bot ini.\n\n"
+        f"4. <i>Selesai! Sistem akan otomatis mendeteksi mutasi dan saldo langsung masuk.</i>\n\n"
         f"💡 <i>Metode Alternatif (Transfer Manual):</i>\n"
         f"• DANA: <code>{config.PAYMENT_DANA}</code>\n"
         f"• GOPAY: <code>{config.PAYMENT_GOPAY}</code>\n"
         f"• OVO: <code>{config.PAYMENT_OVO}</code>\n"
         f"• BANK: <code>{config.PAYMENT_BANK}</code>\n\n"
-        f"⚠️ <i>Pastikan mentransfer tepat <b>Rp {final_amount:,}</b> agar admin dapat langsung mengenali mutasi transfer Anda.</i>"
+        f"📸 <i>Catatan: Kirim screenshot bukti transfer hanya jika Anda transfer manual atau ada kendala.</i>"
     )
 
     try:
@@ -646,11 +662,26 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
     amount = state.get("amount", config.MIN_TOPUP)
     unique_code = state.get("unique_code", 0)
     base_amount = state.get("base_amount", amount)
+    topup_id = state.get("topup_id")
     photo = update.message.photo[-1]  # Highest resolution photo
     file_id = photo.file_id
 
-    # Create topup record
-    topup_id = db.create_topup(user_id=user_id, amount=amount, proof_file_id=file_id)
+    # Check if this topup was already auto-approved by QRIS Hook
+    if topup_id:
+        existing = db.get_topup(topup_id)
+        if existing and existing.get("status") == "approved":
+            del user_topup_states[user_id]
+            await update.message.reply_text(
+                f"🎉 <b>Pembayaran Anda sebesar Rp {amount:,} sudah otomatis masuk beberapa saat yang lalu!</b>\n\n"
+                f"Saldo sudah aktif di akun Anda. Anda bisa langsung memesan email OTP.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        # Update existing record with photo proof
+        db.update_topup_proof(topup_id, file_id)
+    else:
+        # Create topup record fallback
+        topup_id = db.create_topup(user_id=user_id, amount=amount, proof_file_id=file_id)
 
     # Clear user state
     del user_topup_states[user_id]
@@ -1259,24 +1290,197 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 from aiohttp import web
 
-# ================= RENDER HTTP HEALTH CHECK =================
+# ================= RENDER HTTP HEALTH CHECK & QRIS HOOK WEBHOOK =================
 async def health_check(request):
     return web.json_response({
         "status": "online",
         "service": "telegram_otp_bot",
+        "qrishook_webhook": "/webhook/qris",
         "timestamp": datetime.now().isoformat()
     })
+
+
+async def qris_webhook_handler(request: web.Request):
+    """
+    Receives incoming QRIS payment notifications forwarded by QRIS Hook Android App (suriyadi15/qrishook).
+    Automatically matches payment amount with pending topups, approves topup, and credits user balance instantly.
+    """
+    # 1. Verify Secret if configured
+    if config.QRISHOOK_SECRET:
+        req_secret = (
+            request.headers.get("X-Webhook-Secret") or
+            request.query.get("secret")
+        )
+        if not req_secret or req_secret != config.QRISHOOK_SECRET:
+            logger.warning("QRISHook unauthorized request received (secret mismatch)")
+            return web.json_response({"error": "Unauthorized: secret mismatch"}, status=401)
+
+    # 2. Parse JSON payload
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.error("Failed to parse JSON from QRISHook: %s", e)
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    logger.info("Received QRISHook event: %s", data)
+
+    # 3. Extract amount, sender_name, and source
+    raw_amount = None
+    sender_name = "Pengirim QRIS"
+    source_app = "QRIS"
+
+    if isinstance(data, dict):
+        source_app = data.get("source_app") or data.get("source_package") or "QRIS"
+
+        # Format standard suriyadi15/qrishook: {"payment": {"amount": 5482, ...}}
+        payment_info = data.get("payment")
+        if isinstance(payment_info, dict):
+            raw_amount = payment_info.get("amount")
+            if payment_info.get("sender_name"):
+                sender_name = payment_info.get("sender_name")
+            if payment_info.get("payment_source"):
+                source_app = f"{source_app} ({payment_info.get('payment_source')})"
+
+        # Fallback to root level amount
+        if raw_amount is None:
+            raw_amount = data.get("amount")
+
+        # Fallback to parsing from notification title/text
+        if raw_amount is None:
+            notif = data.get("notification") or {}
+            notif_text = f"{notif.get('title', '')} {notif.get('text', '')} {notif.get('big_text', '')}"
+            m = re.search(r'(?:Rp\.?|IDR)\s*([0-9.,]+)', notif_text, re.IGNORECASE)
+            if m:
+                raw_amount = m.group(1)
+
+    if not raw_amount:
+        logger.warning("QRISHook payload missing amount: %s", data)
+        return web.json_response({"error": "Missing payment amount in payload"}, status=400)
+
+    # Clean amount to integer
+    try:
+        clean_amt_str = str(raw_amount).replace(".", "").replace(",", "").strip()
+        amount = int(float(clean_amt_str))
+    except Exception as e:
+        logger.error("Invalid amount format in QRISHook: %s (%s)", raw_amount, e)
+        return web.json_response({"error": f"Invalid amount format: {raw_amount}"}, status=400)
+
+    if amount <= 0:
+        return web.json_response({"error": "Amount must be greater than 0"}, status=400)
+
+    logger.info("Processing QRISHook incoming payment: Rp %s from %s (%s)", amount, sender_name, source_app)
+
+    # 4. Search matching pending topup in database
+    topup = db.find_pending_topup_by_amount(amount)
+    if not topup:
+        logger.warning("No pending topup found for exact amount: Rp %s", amount)
+        # Notify admins about unmatched incoming funds
+        if telegram_bot:
+            for admin_id in config.ADMIN_IDS:
+                try:
+                    await telegram_bot.send_message(
+                        chat_id=admin_id,
+                        text=(
+                            f"⚠️ <b>[QRISHOOK] MUTASI MASUK TIDAK TERDAFTAR</b>\n\n"
+                            f"💰 <b>Nominal:</b> <code>Rp {amount:,}</code>\n"
+                            f"👤 <b>Pengirim:</b> {sender_name}\n"
+                            f"📱 <b>Aplikasi:</b> {source_app}\n"
+                            f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                            f"<i>Tidak ditemukan order topup pending dengan nominal tepat Rp {amount:,}. Silakan cek mutasi manual di aplikasi rekening Anda.</i>"
+                        ),
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as err:
+                    logger.error("Failed to notify admin of unmatched QRISHook: %s", err)
+
+        return web.json_response({
+            "success": False,
+            "message": f"Payment Rp {amount:,} received, but no matching pending topup found in database."
+        }, status=200)
+
+    # 5. Automatically approve topup
+    topup_id = topup["id"]
+    user_id = topup["user_id"]
+    approval_res = db.approve_topup(
+        topup_id=topup_id,
+        admin_id=0,
+        description=f"Top Up Otomatis QRIS Hook (Topup #{topup_id} - {sender_name})"
+    )
+
+    if not approval_res:
+        logger.warning("Topup #%s was already approved or cancelled.", topup_id)
+        return web.json_response({
+            "success": True,
+            "message": f"Topup #{topup_id} already processed"
+        }, status=200)
+
+    new_balance = approval_res["new_balance"]
+    logger.info("SUCCESS: Topup #%s approved automatically! User %s new balance: Rp %s", topup_id, user_id, new_balance)
+
+    # 6. Send instant Telegram notifications
+    if telegram_bot:
+        # Notify User
+        try:
+            user_text = (
+                f"🎉 <b>PEMBAYARAN QRIS BERHASIL DITERIMA!</b>\n\n"
+                f"✅ Saldo sebesar <b>Rp {amount:,}</b> telah berhasil ditambahkan ke akun Anda secara otomatis!\n\n"
+                f"💳 <b>Saldo Baru:</b> <code>Rp {new_balance:,}</code>\n"
+                f"🆔 <b>ID Top Up:</b> <code>#{topup_id}</code>\n"
+                f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"Terima kasih atas pembayaran Anda! Sekarang Anda sudah bisa langsung memesan email OTP."
+            )
+            await telegram_bot.send_message(
+                chat_id=user_id,
+                text=user_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_keyboard(user_id in config.ADMIN_IDS)
+            )
+        except Exception as err:
+            logger.error("Failed to notify user %s of auto topup approval: %s", user_id, err)
+
+        # Notify Admin
+        for admin_id in config.ADMIN_IDS:
+            try:
+                admin_text = (
+                    f"⚡ <b>[QRISHOOK OTOMATIS] TOP UP MASUK & SELESAI!</b>\n\n"
+                    f"🆔 <b>ID Top Up:</b> <code>#{topup_id}</code>\n"
+                    f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+                    f"💰 <b>Nominal:</b> <b>Rp {amount:,}</b> (Lunas)\n"
+                    f"💳 <b>Saldo Baru User:</b> Rp {new_balance:,}\n"
+                    f"🏦 <b>Sumber / Pengirim:</b> {sender_name} ({source_app})\n"
+                    f"⏱️ <b>Status:</b> Auto-Approved (Sistem QRIS Hook)"
+                )
+                await telegram_bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as err:
+                logger.error("Failed to notify admin %s of auto topup: %s", admin_id, err)
+
+    return web.json_response({
+        "success": True,
+        "status": "approved",
+        "topup_id": topup_id,
+        "user_id": user_id,
+        "amount": amount,
+        "new_balance": new_balance
+    }, status=200)
+
 
 async def start_health_server():
     try:
         app = web.Application()
         app.router.add_get("/", health_check)
         app.router.add_get("/health", health_check)
+        app.router.add_get("/webhook/qris", health_check)
+        app.router.add_post("/webhook/qris", qris_webhook_handler)
+        app.router.add_post("/qrishook", qris_webhook_handler)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", config.PORT)
         await site.start()
-        logger.info("Render health check web server running on port %s", config.PORT)
+        logger.info("Render health check & QRISHook webhook server running on port %s", config.PORT)
     except Exception as e:
         logger.warning("Could not start health check web server on port %s: %s", config.PORT, e)
 
@@ -1284,7 +1488,10 @@ async def start_health_server():
 # ================= BOT INITIALIZATION & START =================
 async def post_init(application: Application):
     """Initializes SmailPro engine, health check server, and bottom-left menu commands."""
-    # Start web server for Render health check
+    global telegram_bot
+    telegram_bot = application.bot
+
+    # Start web server for Render health check and QRISHook webhook
     await start_health_server()
 
     # Set bottom-left Menu Button commands

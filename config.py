@@ -52,3 +52,6 @@ PAYMENT_BANK = os.getenv("PAYMENT_BANK", "BCA: 1234567890 a.n Admin")
 
 # Order expiry in minutes
 ORDER_EXPIRE_MINUTES = int(os.getenv("ORDER_EXPIRE_MINUTES", "20"))
+
+# QRIS Hook Webhook Secret (optional, configured in QRIS Hook Android app)
+QRISHOOK_SECRET = os.getenv("QRISHOOK_SECRET", "").strip()

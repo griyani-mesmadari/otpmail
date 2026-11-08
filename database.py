@@ -241,7 +241,7 @@ class Database:
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def approve_topup(self, topup_id: int, admin_id: int) -> Optional[Dict[str, Any]]:
+    def approve_topup(self, topup_id: int, admin_id: int = 0, description: Optional[str] = None) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM topups WHERE id = ? AND status = 'pending'", (topup_id,))
@@ -261,11 +261,12 @@ class Database:
             conn.commit()
 
         # Update balance through update_balance method to record transaction
+        desc = description or (f"Top Up via Admin (Topup ID #{topup_id})" if admin_id else f"Top Up Otomatis QRIS Hook (Topup ID #{topup_id})")
         new_balance = self.update_balance(
             user_id=user_id,
             amount=amount,
             tx_type="topup",
-            description=f"Top Up via Admin (Topup ID #{topup_id})"
+            description=desc
         )
         return {
             "topup_id": topup_id,
@@ -273,6 +274,33 @@ class Database:
             "amount": amount,
             "new_balance": new_balance
         }
+
+    def find_pending_topup_by_amount(self, amount: int) -> Optional[Dict[str, Any]]:
+        """Finds the most recent pending topup matching the exact payment amount."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM topups 
+                WHERE amount = ? AND status = 'pending'
+                ORDER BY id DESC LIMIT 1
+            """, (amount,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_pending_topup_amounts(self) -> set:
+        """Returns set of all currently pending topup amounts to avoid unique code collisions."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT amount FROM topups WHERE status = 'pending'")
+            return {row["amount"] for row in cursor.fetchall()}
+
+    def update_topup_proof(self, topup_id: int, proof_file_id: str) -> bool:
+        """Updates payment proof photo for an existing topup."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE topups SET proof_file_id = ? WHERE id = ?", (proof_file_id, topup_id))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def reject_topup(self, topup_id: int, admin_id: int) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
