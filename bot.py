@@ -1370,6 +1370,17 @@ async def qris_webhook_handler(request: web.Request):
 
     logger.info("Processing QRISHook incoming payment: Rp %s from %s (%s)", amount, sender_name, source_app)
 
+    # Detect Test / Demo ping from QRIS Hook app
+    if (data.get("merchant_id") == "demo_merchant" or
+        "test" in str(data.get("type", "")).lower() or
+        sender_name == "John Doe"):
+        logger.info("QRISHook test connection event received successfully!")
+        return web.json_response({
+            "success": True,
+            "status": "ok",
+            "message": "QRIS Hook test notification received successfully! Webhook is active and working."
+        }, status=200)
+
     # 4. Search matching pending topup in database
     topup = db.find_pending_topup_by_amount(amount)
     if not topup:
