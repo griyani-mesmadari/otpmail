@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import re
 import sys
@@ -616,34 +617,26 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
         f"🔢 <b>Nominal Pokok:</b> Rp {base_thousands:,}\n"
         f"🎯 <b>Kode Unik:</b> <code>+{unique_code}</code> <i>(Pembeda mutasi otomatis Anda)</i>\n"
         f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n\n"
-        f"⚡ <b>AUTO-APPROVE AKTIF (QRIS HOOK):</b>\n"
-        f"• Saldo akan <b>LANGSUNG MASUK OTOMATIS</b> dalam hitungan detik setelah Anda menyelesaikan transfer!\n"
-        f"• Nominal tepat <b>Rp {final_amount:,}</b> sudah otomatis terisi saat scan QR Code.\n"
-        f"• Saldo yang masuk ke akun Anda adalah <b>Rp {final_amount:,}</b> (penuh tanpa potongan biaya admin)!\n\n"
         f"📱 <b>Cara Pembayaran:</b>\n"
         f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (DANA, GoPay, OVO, ShopeePay).\n"
         f"2. Scan / upload gambar QR Code di atas.\n"
         f"3. Pastikan nominal tertera tepat <b>Rp {final_amount:,}</b> lalu selesaikan pembayaran.\n"
-        f"4. <i>Selesai! Sistem akan otomatis mendeteksi mutasi dan saldo langsung masuk.</i>\n\n"
-        f"💡 <i>Metode Alternatif (Transfer Manual):</i>\n"
-        f"• DANA: <code>{config.PAYMENT_DANA}</code>\n"
-        f"• GOPAY: <code>{config.PAYMENT_GOPAY}</code>\n"
-        f"• OVO: <code>{config.PAYMENT_OVO}</code>\n"
-        f"• BANK: <code>{config.PAYMENT_BANK}</code>\n\n"
-        f"📸 <i>Catatan: Kirim screenshot bukti transfer hanya jika Anda transfer manual atau ada kendala.</i>"
+        f"4. <i>Selesai! Sistem akan otomatis mendeteksi mutasi dan saldo langsung masuk.</i>"
     )
 
     try:
         # Generate dynamic QRIS PNG in memory with final_amount
         qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, final_amount)
+        photo_file = io.BytesIO(qr_bytes)
+        photo_file.name = "qris.png"
         qr_msg = await message_target.reply_photo(
-            photo=qr_bytes,
+            photo=photo_file,
             caption=caption,
             parse_mode=ParseMode.HTML
         )
         schedule_delete(qr_msg, delay=300)
     except Exception as e:
-        logger.error("Failed to generate QRIS photo: %s", e)
+        logger.error("Failed to generate/send QRIS photo: %s", e)
         # Fallback to text if image generation encounters issue
         fallback_msg = await message_target.reply_text(caption, parse_mode=ParseMode.HTML)
         schedule_delete(fallback_msg, delay=300)
