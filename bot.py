@@ -1286,11 +1286,17 @@ from aiohttp import web
 # ================= RENDER HTTP HEALTH CHECK & QRIS HOOK WEBHOOK =================
 async def health_check(request):
     recent_topups = []
+    recent_users = []
+    recent_orders = []
     try:
         with db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, user_id, amount, status, created_at FROM topups ORDER BY id DESC LIMIT 10")
             recent_topups = [dict(r) for r in cursor.fetchall()]
+            cursor.execute("SELECT user_id, username, first_name, balance, total_spent FROM users ORDER BY user_id DESC LIMIT 10")
+            recent_users = [dict(r) for r in cursor.fetchall()]
+            cursor.execute("SELECT id, user_id, service, email_address, status, created_at FROM orders ORDER BY id DESC LIMIT 10")
+            recent_orders = [dict(r) for r in cursor.fetchall()]
     except Exception as e:
         recent_topups = [{"error": str(e)}]
 
@@ -1298,7 +1304,10 @@ async def health_check(request):
         "status": "online",
         "service": "telegram_otp_bot",
         "qrishook_webhook": "/webhook/qris",
+        "users_count": len(recent_users),
+        "recent_users": recent_users,
         "recent_topups": recent_topups,
+        "recent_orders": recent_orders,
         "timestamp": datetime.now().isoformat()
     })
 
