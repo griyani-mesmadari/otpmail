@@ -728,6 +728,48 @@ async def admin_topup_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     data = query.data
+
+    if data == "adm_ignore_topup":
+        await query.answer("Mutasi diabaikan.", show_alert=False)
+        orig_text = query.message.text or query.message.caption or ""
+        await query.edit_message_text(
+            text=f"{orig_text}\n\n⚪ <b>DIABAIKAN (Bukan Top Up Bot)</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if data.startswith("adm_assign_"):
+        parts = data.split("_")
+        amount = int(parts[2])
+        target_user_id = int(parts[3])
+        new_balance = db.update_balance(
+            user_id=target_user_id,
+            amount=amount,
+            tx_type="topup",
+            description=f"Top Up QRIS Hook (Manual Assign oleh Admin @{query.from_user.username or admin_id})"
+        )
+        await query.answer(f"Saldo Rp {amount:,} berhasil dimasukkan!", show_alert=True)
+        orig_text = query.message.text or query.message.caption or ""
+        await query.edit_message_text(
+            text=f"{orig_text}\n\n✅ <b>BERHASIL DIMASUKKAN ke User {target_user_id} oleh Admin @{query.from_user.username or admin_id}!</b>\nSaldo baru: <code>Rp {new_balance:,}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        # Notify user
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    f"🎉 <b>PEMBAYARAN QRIS BERHASIL DITERIMA!</b> 🎉\n\n"
+                    f"✅ Saldo sebesar <b>Rp {amount:,}</b> telah ditambahkan ke akun Anda!\n"
+                    f"💳 <b>Total Saldo Sekarang:</b> <b>Rp {new_balance:,}</b>\n\n"
+                    f"Terima kasih atas pembayaran Anda! Sekarang Anda sudah dapat langsung memesan email OTP."
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error("Could not notify assigned user %s: %s", target_user_id, e)
+        return
+
     action, topup_id_str = data.split("_")[1], data.split("_")[2]
     topup_id = int(topup_id_str)
 
@@ -1412,22 +1454,50 @@ async def qris_webhook_handler(request: web.Request):
                             topup["id"], topup["user_id"], topup["amount"], amount)
 
     if not topup:
+        # Check if amount is a round multiple of 1000 (e.g. 50000, 150000, 300000)
+        # All bot topups have unique code (101-999) so amount % 1000 != 0.
+        # Round amounts are store transactions outside the bot, ignore silently!
+        if amount % 1000 == 0:
+            logger.info("Silently ignoring round store transaction of Rp %s", amount)
+            return web.json_response({
+                "success": True,
+                "message": f"Store payment Rp {amount:,} acknowledged (non-bot transaction ignored silently)."
+            }, status=200)
+
         logger.warning("No pending topup found for exact or fuzzy amount: Rp %s", amount)
-        # Notify admins about unmatched incoming funds
+        # Find candidate users who interacted with the bot recently
+        recent_candidates = []
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id, username, first_name FROM users ORDER BY created_at DESC LIMIT 3")
+                recent_candidates = [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            logger.error("Could not fetch recent users for assign buttons: %s", e)
+
+        # Notify admins about unmatched incoming funds WITH 1-CLICK ASSIGN BUTTONS
         if telegram_bot:
+            buttons = []
+            for c in recent_candidates:
+                label = f"✅ Masukkan ke {c['first_name']} (@{c.get('username') or c['user_id']})"
+                buttons.append([InlineKeyboardButton(label, callback_data=f"adm_assign_{amount}_{c['user_id']}")])
+            buttons.append([InlineKeyboardButton("❌ Abaikan (Bukan Top Up Bot)", callback_data="adm_ignore_topup")])
+            admin_kb = InlineKeyboardMarkup(buttons)
+
             for admin_id in config.ADMIN_IDS:
                 try:
                     await telegram_bot.send_message(
                         chat_id=admin_id,
                         text=(
-                            f"⚠️ <b>[QRISHOOK] MUTASI MASUK TIDAK TERDAFTAR</b>\n\n"
+                            f"⚠️ <b>[QRISHOOK] MUTASI MASUK (KODE UNIK TERDETEKSI)</b>\n\n"
                             f"💰 <b>Nominal:</b> <code>Rp {amount:,}</code>\n"
                             f"👤 <b>Pengirim:</b> {sender_name}\n"
                             f"📱 <b>Aplikasi:</b> {source_app}\n"
                             f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                            f"<i>Tidak ditemukan order topup pending dengan nominal tepat Rp {amount:,}. Silakan cek mutasi manual di aplikasi rekening Anda.</i>"
+                            f"<i>Order otomatis tidak ditemukan di database (kemungkinan server baru restart atau waktu order habis). Klik tombol di bawah untuk langsung memasukkan saldo ke akun user:</i>"
                         ),
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=admin_kb
                     )
                 except Exception as err:
                     logger.error("Failed to notify admin of unmatched QRISHook: %s", err)
