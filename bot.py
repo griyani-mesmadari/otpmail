@@ -1285,10 +1285,20 @@ from aiohttp import web
 
 # ================= RENDER HTTP HEALTH CHECK & QRIS HOOK WEBHOOK =================
 async def health_check(request):
+    recent_topups = []
+    try:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, amount, status, created_at FROM topups ORDER BY id DESC LIMIT 10")
+            recent_topups = [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        recent_topups = [{"error": str(e)}]
+
     return web.json_response({
         "status": "online",
         "service": "telegram_otp_bot",
         "qrishook_webhook": "/webhook/qris",
+        "recent_topups": recent_topups,
         "timestamp": datetime.now().isoformat()
     })
 
@@ -1377,7 +1387,23 @@ async def qris_webhook_handler(request: web.Request):
     # 4. Search matching pending topup in database
     topup = db.find_pending_topup_by_amount(amount)
     if not topup:
-        logger.warning("No pending topup found for exact amount: Rp %s", amount)
+        # Fallback: check if there is a pending topup in the same thousand range (e.g. 5100 - 5999)
+        base_k = (amount // 1000) * 1000
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM topups 
+                WHERE status = 'pending' AND amount BETWEEN ? AND ?
+                ORDER BY id DESC LIMIT 1
+            """, (base_k + 100, base_k + 999))
+            fallback_row = cursor.fetchone()
+            if fallback_row:
+                topup = dict(fallback_row)
+                logger.info("Found fuzzy fallback pending topup: #%s for user %s (expected Rp %s, paid Rp %s)",
+                            topup["id"], topup["user_id"], topup["amount"], amount)
+
+    if not topup:
+        logger.warning("No pending topup found for exact or fuzzy amount: Rp %s", amount)
         # Notify admins about unmatched incoming funds
         if telegram_bot:
             for admin_id in config.ADMIN_IDS:
@@ -1477,7 +1503,11 @@ async def start_health_server():
         app = web.Application()
         app.router.add_get("/", health_check)
         app.router.add_get("/health", health_check)
+        app.router.add_get("/webhook", health_check)
         app.router.add_get("/webhook/qris", health_check)
+        app.router.add_get("/qrishook", health_check)
+        app.router.add_post("/", qris_webhook_handler)
+        app.router.add_post("/webhook", qris_webhook_handler)
         app.router.add_post("/webhook/qris", qris_webhook_handler)
         app.router.add_post("/qrishook", qris_webhook_handler)
         runner = web.AppRunner(app)
