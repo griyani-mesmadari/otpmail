@@ -23,7 +23,12 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-APP_DIR="/root/otpmail"
+# Tentukan APP_DIR (gunakan direktori saat ini jika sudah di dalam repo, atau default ke /root/otpmail)
+if [ -f "$PWD/bot.py" ] && [ -d "$PWD/.git" ]; then
+    APP_DIR="$PWD"
+else
+    APP_DIR="/root/otpmail"
+fi
 SERVICE_NAME="otpbot"
 
 # 2. Update sistem dan install paket yang dibutuhkan
@@ -33,13 +38,16 @@ apt-get install -y python3 python3-pip python3-venv git curl ufw
 
 # 3. Setup direktori project & clone/pull repository
 echo -e "\n${YELLOW}[2/7] Menyiapkan repository di ${APP_DIR}...${NC}"
-if [ -d "$APP_DIR/.git" ]; then
+if [ "$APP_DIR" = "$PWD" ]; then
+    echo -e "${GREEN}Menjalankan script dari dalam direktori repo saat ini: ${APP_DIR}${NC}"
+    git fetch origin main || true
+elif [ -d "$APP_DIR/.git" ]; then
     echo -e "${GREEN}Direktori repository sudah ada, melakukan git pull terbaru...${NC}"
     cd "$APP_DIR"
     git fetch origin main
     git reset --hard origin/main
 else
-    echo -e "${GREEN}Melakukan clone repository...${NC}"
+    echo -e "${GREEN}Melakukan clone repository ke ${APP_DIR}...${NC}"
     rm -rf "$APP_DIR"
     git clone https://github.com/griyani-mesmadari/otpmail.git "$APP_DIR"
     cd "$APP_DIR"
