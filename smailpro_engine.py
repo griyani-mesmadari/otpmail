@@ -154,6 +154,7 @@ class SmailProEngine:
                 email_type = "microsoft"
 
             account_type = "real"  # Real Account Premium
+            last_error = "Tidak ada respon dari server"
 
             for attempt in range(max_retries):
                 if service_lower == "gmail" and attempt > 0:
@@ -194,20 +195,31 @@ class SmailProEngine:
                         cand = result["email"]
                         if db.is_email_used(cand):
                             logger.warning("Duplicate detected: %s was already used in an earlier order. Regenerating...", cand)
+                            last_error = f"Email {cand} duplikat"
                             await asyncio.sleep(0.5)
                             continue
 
                         logger.info("Successfully generated fresh real email: %s", cand)
                         return result
                     else:
+                        last_error = result.get("error", "Unknown error")
                         logger.warning("Attempt %d returned: %s", attempt + 1, result)
 
                 except Exception as e:
+                    last_error = str(e)
                     logger.warning("Internal fetch failed on attempt %d: %s", attempt + 1, e)
 
                 await asyncio.sleep(0.5)
 
-            return {"success": False, "error": f"Gagal mendapatkan email unik setelah {max_retries} percobaan"}
+            # Check if session is expired or not logged in
+            session_info = await self.check_session_status()
+            if not session_info.get("isLoggedIn"):
+                return {
+                    "success": False,
+                    "error": f"Sesi Smailpro belum login atau kedaluwarsa ({last_error}). Silakan perbarui sesi login Smailpro."
+                }
+
+            return {"success": False, "error": f"Smailpro: {last_error}"}
 
     async def check_inbox(self, email_address: str, key: str = "", timestamp: int = 0) -> Dict[str, Any]:
         """
