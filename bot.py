@@ -130,8 +130,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= ORDER FLOW (GMAIL, OUTLOOK, HOTMAIL) =================
 async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYPE, service: str):
     """Handles ordering Gmail, Outlook, or Hotmail email."""
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
     if update.message:
         schedule_delete(update.message, delay=10)
+
+    target_msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not target_msg:
+        return
 
     user = update.effective_user
     db_user = db.get_or_create_user(user.id, user.username, user.first_name)
@@ -148,7 +157,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💰 Top Up Saldo Sekarang", callback_data="btn_topup")]
         ])
-        warn_msg = await update.message.reply_text(
+        warn_msg = await target_msg.reply_text(
             f"❌ <b>Saldo Tidak Mencukupi!</b>\n\n"
             f"Saldo Anda saat ini: <code>Rp {db_user['balance']:,}</code>\n"
             f"Tarif per OTP: <code>Rp {config.OTP_PRICE:,}</code>\n\n"
@@ -160,7 +169,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # Sending progress indicator
-    loading_msg = await update.message.reply_text(
+    loading_msg = await target_msg.reply_text(
         f"⏳ <i>Sedang membuka Server Gmail, Outlook, Hotmail dan men-generate 1 alamat {service_title}... Mohon tunggu sebentar.</i>",
         parse_mode=ParseMode.HTML
     )
@@ -233,6 +242,17 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML
         )
         schedule_delete(loading_msg, delay=10)
+
+
+async def order_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback query handler for inline order buttons (/order menu)."""
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    service = query.data.replace("btn_ord_", "").strip()
+    await handle_order_request(update, context, service=service)
 
 
 # ================= INBOX CHECK HANDLER =================
@@ -1450,7 +1470,10 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📬 Pesan Outlook (Server 2)", callback_data="btn_ord_outlook")],
         [InlineKeyboardButton("📨 Pesan Hotmail (Server 2)", callback_data="btn_ord_hotmail")]
     ])
-    msg = await update.message.reply_text(
+    target_msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if not target_msg:
+        return
+    msg = await target_msg.reply_text(
         "⚡ <b>PILIH LAYANAN EMAIL OTP REAL ACCOUNT:</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
@@ -2119,9 +2142,7 @@ def main():
     application.add_handler(CallbackQueryHandler(admin_analytics_handler, pattern=r"^adm_analytics$"))
     application.add_handler(CallbackQueryHandler(admin_topusers_handler, pattern=r"^adm_topusers$"))
     application.add_handler(CallbackQueryHandler(admin_panel_handler, pattern=r"^adm_refresh_panel$"))
-    application.add_handler(CallbackQueryHandler(lambda u, c: handle_order_request(u, c, "gmail"), pattern=r"^btn_ord_gmail$"))
-    application.add_handler(CallbackQueryHandler(lambda u, c: handle_order_request(u, c, "outlook"), pattern=r"^btn_ord_outlook$"))
-    application.add_handler(CallbackQueryHandler(lambda u, c: handle_order_request(u, c, "hotmail"), pattern=r"^btn_ord_hotmail$"))
+    application.add_handler(CallbackQueryHandler(order_button_callback, pattern=r"^btn_ord_"))
 
     # Photos (payment receipts)
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_proof))
