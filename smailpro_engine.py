@@ -170,8 +170,12 @@ class SmailProEngine:
                 domain = "hotmail.com"
                 server_choice = "2"  # Server 2 = ~8700 stok
                 email_type = "microsoft"
-            else:  # outlook
+            elif service_lower == "outlook":
                 domain = "outlook.com"
+                server_choice = "2"  # Server 2 = ~8700 stok
+                email_type = "microsoft"
+            else:  # outlook/hotmail / microsoft
+                domain = random.choice(["outlook.com", "hotmail.com"])
                 server_choice = "2"  # Server 2 = ~8700 stok
                 email_type = "microsoft"
 
@@ -181,6 +185,8 @@ class SmailProEngine:
             for attempt in range(max_retries):
                 if service_lower == "gmail" and attempt > 0:
                     server_choice = random.choice(["2", "3"])
+                elif service_lower not in ("gmail", "hotmail", "outlook") and attempt > 0:
+                    domain = random.choice(["outlook.com", "hotmail.com"])
 
                 logger.info("Requesting fresh %s (%s, server-%s, %s) email from SmailPro (attempt %d/%d)...",
                             service.upper(), domain, server_choice, account_type, attempt + 1, max_retries)

@@ -77,10 +77,10 @@ def schedule_delete(message, delay: int = 10):
 
 
 def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    """Returns persistent main menu reply keyboard with expanded user features."""
+    """Returns persistent main menu reply keyboard with 2 primary email products."""
     buttons = [
         [KeyboardButton("📧 Otp by Gmail ( 1700 stok )")],
-        [KeyboardButton("📬 Otp by Outlook ( 8700 stok )"), KeyboardButton("📨 Otp by Hotmail ( 8700 stok )")],
+        [KeyboardButton("📬 Otp by Outlook / Hotmail ( 8700 stok )")],
         [KeyboardButton("💰 Top Up Saldo"), KeyboardButton("👤 Profil & Saldo")],
         [KeyboardButton("📊 Cek Stok Server"), KeyboardButton("📖 Riwayat Order")],
         [KeyboardButton("🏷️ Tarif & Info"), KeyboardButton("💬 Hubungi CS / Admin")]
@@ -108,8 +108,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Selamat datang di <b>Bot OTP Email Generator</b> 🤖\n\n"
         f"📌 <b>Layanan Email Premium (100% Real Account):</b>\n"
         f"• 📧 <b>Otp by Gmail</b> (1.700 Stok — Server 2 & 3 Premium)\n"
-        f"• 📬 <b>Otp by Outlook</b> (8.700 Stok — Server 2 Premium)\n"
-        f"• 📨 <b>Otp by Hotmail</b> (8.700 Stok — Server 2 Premium)\n\n"
+        f"• 📬 <b>Otp by Outlook / Hotmail</b> (8.700 Stok — Server 2 Premium)\n\n"
         f"✨ <i>Semua email adalah <b>Real Account</b> dan dijamin <b>100% akan update terus stoknya berkala, gaskan !!</b></i>\n\n"
         f"💰 <b>Ketentuan Tarif & Saldo:</b>\n"
         f"• Biaya per inbox/OTP masuk: <b>Rp {config.OTP_PRICE:,}</b>\n"
@@ -127,9 +126,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     schedule_delete(welcome_msg, delay=20)
 
 
-# ================= ORDER FLOW (GMAIL, OUTLOOK, HOTMAIL) =================
+# ================= ORDER FLOW (GMAIL, OUTLOOK / HOTMAIL) =================
 async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYPE, service: str):
-    """Handles ordering Gmail, Outlook, or Hotmail email."""
+    """Handles ordering Gmail or Outlook/Hotmail email."""
     if update.callback_query:
         try:
             await update.callback_query.answer()
@@ -147,10 +146,10 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
     is_admin = user.id in config.ADMIN_IDS
     if service == "gmail":
         service_title = "Gmail (1.700 Stok — Server 2 & 3)"
-    elif service == "hotmail":
-        service_title = "Hotmail (8.700 Stok — Server 2)"
+        service_display = "GMAIL"
     else:
-        service_title = "Outlook (8.700 Stok — Server 2)"
+        service_title = "Outlook / Hotmail (8.700 Stok — Server 2)"
+        service_display = "OUTLOOK / HOTMAIL"
 
     # Check minimum balance (Bypassed for Admin - Unlimited Balance)
     if not is_admin and db_user["balance"] < config.OTP_PRICE:
@@ -170,7 +169,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Sending progress indicator
     loading_msg = await target_msg.reply_text(
-        f"⏳ <i>Sedang membuka Server Gmail, Outlook, Hotmail dan men-generate 1 alamat {service_title}... Mohon tunggu sebentar.</i>",
+        f"⏳ <i>Sedang membuka Server dan men-generate 1 alamat {service_title}... Mohon tunggu sebentar.</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -179,7 +178,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         result = await smailpro.create_email(service)
 
         if not result.get("success") or not result.get("email"):
-            error_msg = result.get("error", "Gagal menghubungi Server Gmail, Outlook, Hotmail")
+            error_msg = result.get("error", "Gagal menghubungi Server Email")
             await loading_msg.edit_text(
                 f"❌ <b>Gagal Generate Email!</b>\n\n"
                 f"Detail: <code>{error_msg}</code>\n"
@@ -213,7 +212,7 @@ async def handle_order_request(update: Update, context: ContextTypes.DEFAULT_TYP
         cost_info = "Gratis 👑 (Admin Unlimited)" if is_admin else f"Rp {config.OTP_PRICE:,} <i>(Hanya dipotong saat OTP masuk)</i>"
 
         order_text = (
-            f"✨ <b>EMAIL {service.upper()} REAL ACCOUNT BERHASIL DIBUAT!</b> ✨\n\n"
+            f"✨ <b>EMAIL {service_display} REAL ACCOUNT BERHASIL DIBUAT!</b> ✨\n\n"
             f"📧 <b>Email:</b> <code>{email_address}</code>\n"
             f"<i>(Klik alamat di atas untuk otomatis menyalin)</i>\n\n"
             f"🆔 <b>ID Order:</b> <code>#{order_id}</code>\n"
@@ -252,13 +251,15 @@ async def order_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         pass
     service = query.data.replace("btn_ord_", "").strip()
+    if service in ("outlook", "hotmail", "microsoft"):
+        service = "outlook"
     await handle_order_request(update, context, service=service)
 
 
 # ================= INBOX CHECK HANDLER =================
 async def check_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("Memeriksa inbox Server Gmail, Outlook, Hotmail...", show_alert=False)
+    await query.answer("Memeriksa inbox Server Email...", show_alert=False)
 
     data = query.data
     order_id = int(data.split("_")[-1])
@@ -1214,7 +1215,7 @@ async def admin_topup_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"🆔 <b>ID Top Up:</b> <code>#{topup_id}</code>\n"
                     f"💰 <b>Nominal Ditambahkan:</b> <code>Rp {res['amount']:,}</code>\n"
                     f"💳 <b>Total Saldo Anda Sekarang:</b> <b>Rp {res['new_balance']:,}</b>\n\n"
-                    f"Terima kasih! Anda sekarang dapat langsung memesan OTP Gmail atau Outlook."
+                    f"Terima kasih! Anda sekarang dapat langsung memesan email OTP."
                 ),
                 parse_mode=ParseMode.HTML
             )
@@ -1385,8 +1386,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"ℹ️ <b>PANDUAN & BANTUAN BOT OTP</b>\n\n"
         f"1. <b>Cara Pesan Email:</b>\n"
         f"   • Pastikan saldo Anda minimal Rp {config.OTP_PRICE:,}.\n"
-        f"   • Klik menu <b>📧 Otp by Gmail</b>, <b>📬 Otp by Outlook</b>, atau <b>📨 Otp by Hotmail</b>.\n"
-        f"   • Bot akan membuka Server Gmail, Outlook, Hotmail dan memberikan 1 alamat email Real Account baru.\n\n"
+        f"   • Klik menu <b>📧 Otp by Gmail</b> atau <b>📬 Otp by Outlook / Hotmail</b>.\n"
+        f"   • Bot akan membuka Server dan memberikan 1 alamat email Real Account baru.\n\n"
         f"2. <b>Cara Menerima OTP:</b>\n"
         f"   • Salin email yang diberikan dan gunakan untuk registrasi pada website/aplikasi tujuan.\n"
         f"   • Setelah OTP terkirim, kembali ke bot dan klik tombol <b>📩 Cek Inbox / OTP</b> pada kartu email tersebut.\n"
@@ -1406,17 +1407,13 @@ async def stok_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"📊 <b>STATUS LIVE STOK EMAIL REAL ACCOUNT</b>\n\n"
-        f"🟢 <b>Server Gmail:</b>\n"
+        f"🟢 <b>1. Server Gmail:</b>\n"
         f"• Server-2 & Server-3 (Premium): <b>~1.756 Akun</b>\n"
         f"• Tipe: Random Real Account (@gmail.com)\n"
         f"• Status: 100% Siap Digunakan\n\n"
-        f"🟢 <b>Server Outlook:</b>\n"
+        f"🟢 <b>2. Server Outlook / Hotmail:</b>\n"
         f"• Server-2 (Premium): <b>~8.708 Akun</b>\n"
-        f"• Tipe: Microsoft Real Account (@outlook.com)\n"
-        f"• Status: 100% Siap Digunakan\n\n"
-        f"🟢 <b>Server Hotmail:</b>\n"
-        f"• Server-2 (Premium): <b>~8.708 Akun</b>\n"
-        f"• Tipe: Microsoft Real Account (@hotmail.com)\n"
+        f"• Tipe: Microsoft Real Account (@outlook.com / @hotmail.com)\n"
         f"• Status: 100% Siap Digunakan\n\n"
         f"🛡️ <b>Jaminan Anti-Duplikat:</b> <b>AKTIF</b>\n"
         f"<i>Setiap email yang Anda generate dijamin 100% baru dan belum pernah dipakai sebelumnya.</i>\n\n"
@@ -1487,8 +1484,7 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📧 Pesan Gmail (Server 2 & 3)", callback_data="btn_ord_gmail")],
-        [InlineKeyboardButton("📬 Pesan Outlook (Server 2)", callback_data="btn_ord_outlook")],
-        [InlineKeyboardButton("📨 Pesan Hotmail (Server 2)", callback_data="btn_ord_hotmail")]
+        [InlineKeyboardButton("📬 Pesan Outlook / Hotmail (Server 2)", callback_data="btn_ord_outlook")]
     ])
     target_msg = update.message or (update.callback_query.message if update.callback_query else None)
     if not target_msg:
@@ -1520,7 +1516,7 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• Order Sukses (OTP Masuk): <b>{stats['completed_orders']}</b>\n"
         f"• Total Omset OTP: <b>Rp {stats['total_revenue']:,}</b>\n"
         f"• Total Saldo Mengendap: <b>Rp {stats['total_user_balance']:,}</b>\n\n"
-        f"🌐 <b>Status Server Gmail, Outlook, Hotmail:</b>\n"
+        f"🌐 <b>Status Server SmailPro Engine:</b>\n"
         f"• Status Premium: <b>{premium_icon}</b>\n"
         f"• Logged In: <b>{session_status.get('isLoggedIn')}</b>\n\n"
         f"🛠️ <b>Fitur Analisis & Kontrol Admin:</b>\n"
@@ -1713,10 +1709,13 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Main Menu routing
     if text.startswith("📧 Otp by Gmail") or text == "📧 Pesan OTP Gmail":
         await handle_order_request(update, context, service="gmail")
-    elif text.startswith("📬 Otp by Outlook") or text == "📬 Pesan OTP Outlook":
+    elif (
+        text.startswith("📬 Otp by Outlook")
+        or text.startswith("📨 Otp by Hotmail")
+        or "outlook" in text.lower()
+        or "hotmail" in text.lower()
+    ):
         await handle_order_request(update, context, service="outlook")
-    elif text.startswith("📨 Otp by Hotmail") or text == "📨 Pesan OTP Hotmail":
-        await handle_order_request(update, context, service="hotmail")
     elif text == "💰 Top Up Saldo":
         await topup_menu_handler(update, context)
     elif text == "👤 Profil & Saldo":
