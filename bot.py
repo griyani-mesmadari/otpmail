@@ -546,6 +546,128 @@ async def delete_card_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
 
+# ================= BULK CANCEL ALL ORDERS HANDLER =================
+async def cancel_all_orders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback handler to cancel all waiting orders for the current user."""
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+
+    waiting_ids = db.get_waiting_order_ids(user_id)
+    if not waiting_ids:
+        await query.answer("Tidak ada order pending yang aktif saat ini.", show_alert=True)
+        return
+
+    # Cancel active background polling tasks
+    for oid in waiting_ids:
+        task = active_polling_tasks.pop(oid, None)
+        if task and not task.done():
+            task.cancel()
+
+    # Bulk cancel in DB
+    cancelled_count = db.cancel_all_waiting_orders(user_id)
+
+    await query.answer(f"✅ Berhasil membatalkan {cancelled_count} order pending!", show_alert=True)
+
+    text = (
+        f"🗑️ <b>SEMUA ORDER PENDING BERHASIL DIBATALKAN!</b>\n\n"
+        f"• Total Dibatalkan: <b>{cancelled_count} order</b>\n"
+        f"• Status: <code>Semua Dibatalkan</code>\n"
+        f"• Saldo Anda: <b>100% Aman &amp; Tidak Terpotong</b>\n\n"
+        f"<i>Semua kartu order yang menunggu OTP telah dibatalkan. Anda dapat membuat pesanan baru kapan saja!</i>\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik.</i>"
+    )
+
+    try:
+        if query.message:
+            await query.message.edit_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📖 Lihat Riwayat Terkini", callback_data="btn_history")]
+                ])
+            )
+            schedule_delete(query.message, delay=15)
+        else:
+            msg = await context.bot.send_message(chat_id=user_id, text=text, parse_mode=ParseMode.HTML)
+            schedule_delete(msg, delay=15)
+    except Exception as e:
+        logger.error("Error editing message in cancel_all_orders_callback: %s", e)
+
+
+async def cancel_all_orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command / text handler to cancel all waiting orders for the current user."""
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
+    user = update.effective_user
+    user_id = user.id
+
+    waiting_ids = db.get_waiting_order_ids(user_id)
+    if not waiting_ids:
+        target = update.message or (update.callback_query.message if update.callback_query else None)
+        if target:
+            msg = await target.reply_text(
+                "ℹ️ Anda tidak memiliki order yang sedang pending (waiting).",
+                parse_mode=ParseMode.HTML
+            )
+            schedule_delete(msg, delay=10)
+        return
+
+    for oid in waiting_ids:
+        task = active_polling_tasks.pop(oid, None)
+        if task and not task.done():
+            task.cancel()
+
+    cancelled_count = db.cancel_all_waiting_orders(user_id)
+
+    text = (
+        f"🗑️ <b>SEMUA ORDER PENDING BERHASIL DIBATALKAN!</b>\n\n"
+        f"• Total Dibatalkan: <b>{cancelled_count} order</b>\n"
+        f"• Status: <code>Semua Dibatalkan</code>\n"
+        f"• Saldo Anda: <b>100% Aman &amp; Tidak Terpotong</b>\n\n"
+        f"<i>Semua kartu order yang menunggu OTP telah dibatalkan. Anda dapat membuat pesanan baru kapan saja!</i>\n\n"
+        f"⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik.</i>"
+    )
+
+    target_msg = update.message or (update.callback_query.message if update.callback_query else None)
+    if target_msg:
+        msg = await target_msg.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📖 Lihat Riwayat Order", callback_data="btn_history")]
+            ])
+        )
+        schedule_delete(msg, delay=15)
+
+
+async def cancel_all_global_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only command to cancel all waiting orders globally in the database."""
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+
+    if update.message:
+        schedule_delete(update.message, delay=10)
+
+    waiting_ids = db.get_waiting_order_ids(user_id=None)
+    for oid in waiting_ids:
+        task = active_polling_tasks.pop(oid, None)
+        if task and not task.done():
+            task.cancel()
+
+    cancelled_count = db.cancel_all_waiting_orders(user_id=None)
+
+    target = update.message or (update.callback_query.message if update.callback_query else None)
+    if target:
+        msg = await target.reply_text(
+            f"⚡ <b>[ADMIN GLOBAL]</b> Berhasil membatalkan <b>{cancelled_count}</b> order waiting di seluruh sistem!",
+            parse_mode=ParseMode.HTML
+        )
+        schedule_delete(msg, delay=15)
+
+
 async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("Kode OTP sudah masuk. Silakan salin.", show_alert=False)
 
@@ -1304,6 +1426,8 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         schedule_delete(hist_msg, delay=10)
         return
 
+    has_waiting = any(o["status"] == "waiting" for o in orders)
+
     lines = ["📖 <b>RIWAYAT 8 ORDER TERAKHIR:</b>\n"]
     for o in orders:
         status_icon = "⏳" if o["status"] == "waiting" else ("✅" if o["status"] == "completed" else "❌")
@@ -1313,15 +1437,27 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   📧 <code>{o['email_address']}</code>\n"
             f"   {otp_info} | {o['created_at'][:16]}\n"
         )
-    lines.append("\n⏱️ <i>Pesan ini otomatis dihapus dalam 10 detik agar chat tetap rapi.</i>")
+    lines.append("\n⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik agar chat tetap rapi.</i>")
 
     full_text = "\n".join(lines)
+
+    buttons = []
+    if has_waiting:
+        buttons.append([InlineKeyboardButton("🗑️ Batalkan Semua Order Pending", callback_data="btn_cancel_all_orders")])
+    buttons.append([InlineKeyboardButton("🔄 Refresh Riwayat", callback_data="btn_history")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+
     if update.callback_query:
         await update.callback_query.answer()
-        hist_msg = await update.callback_query.message.reply_text(full_text, parse_mode=ParseMode.HTML)
+        try:
+            await update.callback_query.message.edit_text(full_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            schedule_delete(update.callback_query.message, delay=15)
+        except Exception:
+            hist_msg = await update.callback_query.message.reply_text(full_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            schedule_delete(hist_msg, delay=15)
     else:
-        hist_msg = await update.message.reply_text(full_text, parse_mode=ParseMode.HTML)
-    schedule_delete(hist_msg, delay=10)
+        hist_msg = await update.message.reply_text(full_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        schedule_delete(hist_msg, delay=15)
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1724,6 +1860,16 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await stok_handler(update, context)
     elif text == "📖 Riwayat Order":
         await history_handler(update, context)
+    elif text.lower().strip() in (
+        "batalkan semua order",
+        "batalkan semua orderan",
+        "batal semua order",
+        "batal semua orderan",
+        "batal semua",
+        "/batal_semua",
+        "/cancel_all"
+    ):
+        await cancel_all_orders_command(update, context)
     elif text == "🏷️ Tarif & Info":
         await tarif_handler(update, context)
     elif text == "💬 Hubungi CS / Admin":
@@ -2138,6 +2284,8 @@ def main():
     application.add_handler(CommandHandler("bantuan", help_handler))
     application.add_handler(CommandHandler("saldo", profile_handler))
     application.add_handler(CommandHandler("riwayat", history_handler))
+    application.add_handler(CommandHandler(["batal_semua", "cancel_all", "batalkansemua"], cancel_all_orders_command))
+    application.add_handler(CommandHandler(["batal_semua_global", "cancel_all_global"], cancel_all_global_command))
     application.add_handler(CommandHandler("topup", topup_menu_handler))
     application.add_handler(CommandHandler("analytics", admin_analytics_handler))
     application.add_handler(CommandHandler("topuser", admin_topusers_handler))
@@ -2150,6 +2298,7 @@ def main():
     application.add_handler(CallbackQueryHandler(check_inbox_callback, pattern=r"^check_inbox_"))
     application.add_handler(CallbackQueryHandler(auto_poll_callback, pattern=r"^auto_poll_"))
     application.add_handler(CallbackQueryHandler(cancel_order_callback, pattern=r"^cancel_order_"))
+    application.add_handler(CallbackQueryHandler(cancel_all_orders_callback, pattern=r"^btn_cancel_all_orders$"))
     application.add_handler(CallbackQueryHandler(delete_card_callback, pattern=r"^delete_card_"))
     application.add_handler(CallbackQueryHandler(noop_callback, pattern=r"^noop_"))
     application.add_handler(CallbackQueryHandler(topup_menu_handler, pattern=r"^btn_topup$"))

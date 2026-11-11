@@ -232,6 +232,32 @@ class Database:
             conn.commit()
             return cursor.rowcount > 0
 
+    def cancel_all_waiting_orders(self, user_id: Optional[int] = None) -> int:
+        """Cancels all waiting orders for a user (or globally if user_id is None). Returns count."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if user_id is not None:
+                cursor.execute(
+                    "UPDATE orders SET status = 'cancelled' WHERE user_id = ? AND status = 'waiting'",
+                    (user_id,)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE orders SET status = 'cancelled' WHERE status = 'waiting'"
+                )
+            conn.commit()
+            return cursor.rowcount
+
+    def get_waiting_order_ids(self, user_id: Optional[int] = None) -> List[int]:
+        """Returns a list of order IDs with status 'waiting' for a user (or globally)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if user_id is not None:
+                cursor.execute("SELECT id FROM orders WHERE user_id = ? AND status = 'waiting'", (user_id,))
+            else:
+                cursor.execute("SELECT id FROM orders WHERE status = 'waiting'")
+            return [row["id"] for row in cursor.fetchall()]
+
     def get_user_orders(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
