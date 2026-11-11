@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 # State tracking for topup dialogs: {user_id: {"step": "waiting_amount" | "waiting_proof", "amount": int}}
 user_topup_states: Dict[int, dict] = {}
+# State tracking for admin interactive prompts: {admin_id: {"action": "waiting_broadcast" | "waiting_topup_user" | "waiting_deduct_user"}}
+admin_states: Dict[int, dict] = {}
 # Background auto-poll tracking for OTP: {order_id: asyncio.Task}
 active_polling_tasks: Dict[int, asyncio.Task] = {}
 # Background auto-poll tracking for Topup QRIS: {topup_id: asyncio.Task}
@@ -83,12 +85,11 @@ def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton("📬 Otp by Outlook / Hotmail ( 8700 stok )")],
         [KeyboardButton("💰 Top Up Saldo"), KeyboardButton("👤 Profil & Saldo")],
         [KeyboardButton("📊 Cek Stok Server"), KeyboardButton("📖 Riwayat Order")],
-        [KeyboardButton("🏷️ Tarif & Info"), KeyboardButton("💬 Hubungi CS / Admin")]
+        [KeyboardButton("🗑️ Batalkan Semua Order"), KeyboardButton("🏷️ Tarif & Info")],
+        [KeyboardButton("💬 Hubungi CS / Admin"), KeyboardButton("🧹 Bersihkan Chat")]
     ]
     if is_admin:
-        buttons.append([KeyboardButton("🧹 Bersihkan Chat"), KeyboardButton("⚙️ Panel Admin")])
-    else:
-        buttons.append([KeyboardButton("🧹 Bersihkan Chat")])
+        buttons.append([KeyboardButton("⚙️ Panel Admin")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 
@@ -1659,13 +1660,23 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"Klik tombol menu di bawah untuk melihat rincian analytics kebutuhan user & leaderboard:"
     )
 
+    # Reset active interactive action for admin on panel load
+    admin_states.pop(user.id, None)
+
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 Analisis Kebutuhan OTP", callback_data="adm_analytics"),
-            InlineKeyboardButton("🏆 Top User & Top Up", callback_data="adm_topusers")
+            InlineKeyboardButton("📢 Kirim Pesan ke Semua User", callback_data="adm_btn_broadcast"),
         ],
         [
-            InlineKeyboardButton("🔄 Refresh Status", callback_data="adm_refresh_panel")
+            InlineKeyboardButton("💳 Top Up Saldo User", callback_data="adm_btn_topup_user"),
+            InlineKeyboardButton("➖ Potong Saldo User", callback_data="adm_btn_deduct_user"),
+        ],
+        [
+            InlineKeyboardButton("📊 Analisis Kebutuhan OTP", callback_data="adm_analytics"),
+            InlineKeyboardButton("🏆 Top User & Top Up", callback_data="adm_topusers"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh Status", callback_data="adm_refresh_panel"),
         ]
     ])
 
@@ -1674,6 +1685,241 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.callback_query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+# ================= ADMIN INTERACTIVE ACTIONS =================
+async def admin_broadcast_prompt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+    await query.answer()
+
+    admin_states[user.id] = {"action": "waiting_broadcast"}
+
+    prompt_text = (
+        "📢 <b>KIRIM PESAN SIARAN (BROADCAST) KE SEMUA USER</b>\n\n"
+        "Silakan ketik atau tempel pesan pengumuman yang ingin dikirimkan ke <b>seluruh pengguna bot</b>.\n\n"
+        "✨ <b>Fitur:</b>\n"
+        "• Pesan akan langsung muncul sebagai notifikasi di bot setiap user.\n"
+        "• Mendukung teks biasa maupun format HTML (<b>tebal</b>, <i>miring</i>, <code>kode</code>, link).\n\n"
+        "✍️ <i>Ketik pesan pengumuman sekarang, atau ketik <code>batal</code> untuk membatalkan:</i>"
+    )
+
+    cancel_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Batal", callback_data="adm_cancel_action")]
+    ])
+    await query.message.edit_text(prompt_text, parse_mode=ParseMode.HTML, reply_markup=cancel_markup)
+
+
+async def admin_topup_user_prompt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+    await query.answer()
+
+    admin_states[user.id] = {"action": "waiting_topup_user"}
+
+    prompt_text = (
+        "💳 <b>TOP UP SALDO USER MANUAL</b>\n\n"
+        "Silakan masukkan <b>Username Telegram</b> atau <b>User ID</b> serta <b>Nominal Saldo</b> yang ingin ditambahkan.\n\n"
+        "📝 <b>Format:</b>\n"
+        "<code>[username atau user_id] [nominal]</code>\n\n"
+        "💡 <b>Contoh:</b>\n"
+        "• <code>@budi 10000</code>\n"
+        "• <code>8403291265 25000</code>\n\n"
+        "✍️ <i>Ketik di bawah ini sekarang, atau ketik <code>batal</code> untuk membatalkan:</i>"
+    )
+
+    cancel_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Batal", callback_data="adm_cancel_action")]
+    ])
+    await query.message.edit_text(prompt_text, parse_mode=ParseMode.HTML, reply_markup=cancel_markup)
+
+
+async def admin_deduct_user_prompt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+    await query.answer()
+
+    admin_states[user.id] = {"action": "waiting_deduct_user"}
+
+    prompt_text = (
+        "➖ <b>POTONG SALDO USER MANUAL</b>\n\n"
+        "Silakan masukkan <b>Username Telegram</b> atau <b>User ID</b> serta <b>Nominal Saldo</b> yang ingin dipotong.\n\n"
+        "📝 <b>Format:</b>\n"
+        "<code>[username atau user_id] [nominal]</code>\n\n"
+        "💡 <b>Contoh:</b>\n"
+        "• <code>@budi 5000</code>\n"
+        "• <code>8403291265 5000</code>\n\n"
+        "✍️ <i>Ketik di bawah ini sekarang, atau ketik <code>batal</code> untuk membatalkan:</i>"
+    )
+
+    cancel_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Batal", callback_data="adm_cancel_action")]
+    ])
+    await query.message.edit_text(prompt_text, parse_mode=ParseMode.HTML, reply_markup=cancel_markup)
+
+
+async def admin_cancel_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if user.id not in config.ADMIN_IDS:
+        return
+    admin_states.pop(user.id, None)
+    await query.answer("Tindakan dibatalkan.", show_alert=False)
+    await admin_panel_handler(update, context)
+
+
+async def execute_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_content: str):
+    """Broadcasts message to all users in database with live progress report."""
+    user_ids = db.get_all_user_ids()
+    total_users = len(user_ids)
+
+    status_msg = await update.message.reply_text(
+        f"📢 <b>MEMULAI PENGIRIMAN PESAN KE SEMUA PENGGUNA...</b>\n\n"
+        f"Target penerima: <b>{total_users}</b> pengguna terdaftar.\n"
+        f"Mohon tunggu sebentar, pesan sedang dikirim...",
+        parse_mode=ParseMode.HTML
+    )
+
+    sent = 0
+    failed = 0
+
+    formatted_broadcast = (
+        f"📢 <b>PEMBERITAHUAN RESMI DARI ADMIN</b>\n\n"
+        f"{broadcast_content}\n\n"
+        f"⏱️ <i>Pesan resmi dari administrator Ramba Store OTP Bot.</i>"
+    )
+
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=formatted_broadcast,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            sent += 1
+            await asyncio.sleep(0.04)  # Prevent hitting Telegram flood limits (max 30 msgs/sec)
+        except Exception:
+            failed += 1
+
+    report_text = (
+        f"✅ <b>PENGIRIMAN PESAN SELESAI!</b>\n\n"
+        f"• Total Target: <b>{total_users}</b> pengguna\n"
+        f"• Berhasil Terkirim: <b>{sent}</b> pengguna\n"
+        f"• Gagal / Blokir Bot: <b>{failed}</b> pengguna\n\n"
+        f"<i>Semua pengguna aktif telah menerima notifikasi pesan Anda di bot mereka.</i>"
+    )
+
+    back_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚙️ Kembali ke Panel Admin", callback_data="adm_refresh_panel")]
+    ])
+    await status_msg.edit_text(report_text, parse_mode=ParseMode.HTML, reply_markup=back_markup)
+
+
+async def execute_admin_balance_adjustment(update: Update, context: ContextTypes.DEFAULT_TYPE, input_text: str, is_deduct: bool = False):
+    """Processes admin top up or deduction: parses target (username/id) and nominal amount."""
+    parts = input_text.split()
+    if len(parts) < 2:
+        err = await update.message.reply_text(
+            "❌ Format salah! Gunakan: <code>[username/ID] [nominal]</code>\nContoh: <code>@budi 10000</code> atau <code>8403291265 10000</code>",
+            parse_mode=ParseMode.HTML
+        )
+        schedule_delete(err, delay=15)
+        return
+
+    target_id_or_user = parts[0].strip()
+    raw_amount = parts[1].replace(".", "").replace(",", "").strip()
+
+    if not raw_amount.isdigit():
+        err = await update.message.reply_text("❌ Nominal saldo harus berupa angka (contoh: 10000).", parse_mode=ParseMode.HTML)
+        schedule_delete(err, delay=15)
+        return
+
+    amount = int(raw_amount)
+    if amount <= 0:
+        err = await update.message.reply_text("❌ Nominal harus lebih dari 0.", parse_mode=ParseMode.HTML)
+        schedule_delete(err, delay=15)
+        return
+
+    # Find user in DB
+    target_user = db.find_user(target_id_or_user)
+    if not target_user:
+        err = await update.message.reply_text(
+            f"❌ Pengguna <b>{target_id_or_user}</b> tidak ditemukan di database bot.\n"
+            f"Pastikan username benar dan pengguna tersebut sudah pernah menekan <b>/start</b> di bot.",
+            parse_mode=ParseMode.HTML
+        )
+        schedule_delete(err, delay=15)
+        return
+
+    target_uid = target_user["user_id"]
+    display_name = f"@{target_user['username']}" if target_user.get("username") else (target_user.get("first_name") or f"User {target_uid}")
+
+    if is_deduct:
+        delta = -amount
+        desc = "Diproses manual (pengurangan) oleh Admin"
+        tx_type = "admin_deduct"
+        action_word = "DIPOTONG"
+    else:
+        delta = amount
+        desc = "Top Up Manual oleh Admin"
+        tx_type = "admin_topup"
+        action_word = "DITAMBAHKAN"
+
+    try:
+        new_balance = db.update_balance(
+            user_id=target_uid,
+            amount=delta,
+            tx_type=tx_type,
+            description=desc
+        )
+    except ValueError as e:
+        err = await update.message.reply_text(f"❌ Gagal memperbarui saldo: {str(e)}", parse_mode=ParseMode.HTML)
+        schedule_delete(err, delay=15)
+        return
+
+    # 1. Notify Target User
+    try:
+        if is_deduct:
+            user_notif = (
+                f"⚠️ <b>PEMBERITAHUAN SALDO AKUN</b>\n\n"
+                f"Saldo Anda telah dipotong oleh Admin sebesar: <b>Rp {amount:,}</b>\n"
+                f"💳 <b>Sisa Saldo Anda:</b> <code>Rp {new_balance:,}</code>\n"
+                f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"Jika ada pertanyaan, silakan hubungi Customer Service."
+            )
+        else:
+            user_notif = (
+                f"🎉 <b>SALDO BERHASIL DITAMBAHKAN OLEH ADMIN!</b>\n\n"
+                f"✅ Saldo sebesar <b>Rp {amount:,}</b> telah berhasil masuk ke akun Anda!\n\n"
+                f"💳 <b>Saldo Baru Anda:</b> <code>Rp {new_balance:,}</code>\n"
+                f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"<i>Sekarang Anda sudah dapat langsung menggunakan saldo ini untuk memesan email OTP!</i>"
+            )
+        await context.bot.send_message(chat_id=target_uid, text=user_notif, parse_mode=ParseMode.HTML)
+    except Exception as notify_err:
+        logger.warning("Could not send balance notification to user %s: %s", target_uid, notify_err)
+
+    # 2. Confirm to Admin
+    admin_confirm = (
+        f"✅ <b>BERHASIL {action_word} SALDO USER!</b>\n\n"
+        f"👤 <b>Pengguna:</b> <b>{display_name}</b> (ID: <code>{target_uid}</code>)\n"
+        f"💰 <b>Nominal:</b> <code>Rp {amount:,}</code>\n"
+        f"💳 <b>Saldo Baru User:</b> <b>Rp {new_balance:,}</b>\n"
+        f"📢 <b>Status Notifikasi:</b> <i>Notifikasi telah dikirimkan ke chat pengguna</i>"
+    )
+
+    back_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Top Up User Lain", callback_data="adm_btn_topup_user")],
+        [InlineKeyboardButton("⚙️ Kembali ke Panel Admin", callback_data="adm_refresh_panel")]
+    ])
+    await update.message.reply_text(admin_confirm, parse_mode=ParseMode.HTML, reply_markup=back_markup)
 
 
 async def admin_analytics_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1769,32 +2015,60 @@ async def cmd_tambahsaldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in config.ADMIN_IDS:
         return
 
+    if len(context.args) < 2:
+        await update.message.reply_text("Format: /tambahsaldo <@username atau user_id> <nominal>")
+        return
+
+    target = context.args[0].strip()
+    u = db.find_user(target)
+    if not u:
+        await update.message.reply_text(f"❌ User '{target}' tidak ditemukan di database.")
+        return
+
     try:
-        user_id = int(context.args[0])
-        amount = int(context.args[1])
-        new_balance = db.update_balance(user_id, amount, "admin_adjust", "Ditambahkan manual oleh Admin")
-        await update.message.reply_text(f"✅ Berhasil menambahkan Rp {amount:,} ke User {user_id}. Saldo sekarang: Rp {new_balance:,}.")
+        raw_amt = context.args[1].replace(".", "").replace(",", "")
+        amount = int(raw_amt)
+        new_balance = db.update_balance(u["user_id"], amount, "admin_adjust", "Ditambahkan manual oleh Admin")
+        await update.message.reply_text(f"✅ Berhasil menambahkan Rp {amount:,} ke {target} (ID: {u['user_id']}). Saldo sekarang: Rp {new_balance:,}.")
         # Notify user
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"🎁 Admin telah menambahkan saldo sebesar <b>Rp {amount:,}</b> ke akun Anda.\nTotal saldo: <b>Rp {new_balance:,}</b>.",
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=u["user_id"],
+                text=(
+                    f"🎉 <b>SALDO BERHASIL DITAMBAHKAN OLEH ADMIN!</b>\n\n"
+                    f"✅ Saldo sebesar <b>Rp {amount:,}</b> telah berhasil masuk ke akun Anda!\n"
+                    f"💳 <b>Total Saldo Anda Sekarang:</b> <b>Rp {new_balance:,}</b>\n\n"
+                    f"<i>Selamat menggunakan layanan Bot OTP!</i>"
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
     except Exception as e:
-        await update.message.reply_text("Format salah. Gunakan: /tambahsaldo <user_id> <jumlah>")
+        await update.message.reply_text(f"Format salah atau error: {str(e)}")
 
 
 async def cmd_kurangsaldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in config.ADMIN_IDS:
         return
 
+    if len(context.args) < 2:
+        await update.message.reply_text("Format: /kurangsaldo <@username atau user_id> <nominal>")
+        return
+
+    target = context.args[0].strip()
+    u = db.find_user(target)
+    if not u:
+        await update.message.reply_text(f"❌ User '{target}' tidak ditemukan di database.")
+        return
+
     try:
-        user_id = int(context.args[0])
-        amount = int(context.args[1])
-        new_balance = db.update_balance(user_id, -amount, "admin_adjust", "Dikurangi manual oleh Admin")
-        await update.message.reply_text(f"✅ Berhasil memotong Rp {amount:,} dari User {user_id}. Saldo sekarang: Rp {new_balance:,}.")
+        raw_amt = context.args[1].replace(".", "").replace(",", "")
+        amount = int(raw_amt)
+        new_balance = db.update_balance(u["user_id"], -amount, "admin_adjust", "Dikurangi manual oleh Admin")
+        await update.message.reply_text(f"✅ Berhasil memotong Rp {amount:,} dari {target} (ID: {u['user_id']}). Saldo sekarang: Rp {new_balance:,}.")
     except Exception as e:
-        await update.message.reply_text("Format salah. Gunakan: /kurangsaldo <user_id> <jumlah>")
+        await update.message.reply_text(f"Format salah atau error: {str(e)}")
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1806,25 +2080,35 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Silakan tulis pesan broadcast. Contoh: /broadcast Halo semuanya!")
         return
 
-    user_ids = db.get_all_user_ids()
-    sent = 0
-    await update.message.reply_text(f"📢 Memulai broadcast ke {len(user_ids)} pengguna...")
-
-    for uid in user_ids:
-        try:
-            await context.bot.send_message(chat_id=uid, text=f"📢 <b>PENGUMUMAN</b>\n\n{message_text}", parse_mode=ParseMode.HTML)
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception:
-            pass
-
-    await update.message.reply_text(f"✅ Broadcast selesai. Terkirim ke {sent}/{len(user_ids)} pengguna.")
+    await execute_broadcast_message(update, context, message_text)
 
 
 # ================= TEXT MESSAGE ROUTER =================
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
+
+    # Check Admin Interactive Prompts
+    if user_id in config.ADMIN_IDS and user_id in admin_states:
+        state = admin_states[user_id]
+        action = state.get("action")
+
+        if text.lower() == "batal":
+            admin_states.pop(user_id, None)
+            cancel_msg = await update.message.reply_text("❌ Tindakan admin dibatalkan.")
+            schedule_delete(cancel_msg, delay=10)
+            return
+
+        if action == "waiting_broadcast":
+            admin_states.pop(user_id, None)
+            await execute_broadcast_message(update, context, text)
+            return
+
+        elif action in ("waiting_topup_user", "waiting_deduct_user"):
+            admin_states.pop(user_id, None)
+            is_deduct = (action == "waiting_deduct_user")
+            await execute_admin_balance_adjustment(update, context, text, is_deduct=is_deduct)
+            return
 
     # Check topup custom amount state
     if user_id in user_topup_states and user_topup_states[user_id].get("step") == "waiting_custom_amount":
@@ -1860,14 +2144,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await stok_handler(update, context)
     elif text == "📖 Riwayat Order":
         await history_handler(update, context)
-    elif text.lower().strip() in (
-        "batalkan semua order",
-        "batalkan semua orderan",
-        "batal semua order",
-        "batal semua orderan",
-        "batal semua",
-        "/batal_semua",
-        "/cancel_all"
+    elif (
+        text.startswith("🗑️ Batalkan Semua Order")
+        or text.startswith("🗑️ Batal")
+        or "batalkan semua" in text.lower()
+        or "batal semua" in text.lower()
+        or text.lower().strip() in ("/batal_semua", "/cancel_all")
     ):
         await cancel_all_orders_command(update, context)
     elif text == "🏷️ Tarif & Info":
@@ -2306,10 +2588,14 @@ def main():
     application.add_handler(CallbackQueryHandler(topup_amount_callback, pattern=r"^topup_amt_"))
     application.add_handler(CallbackQueryHandler(topup_check_callback, pattern=r"^topup_check_"))
     application.add_handler(CallbackQueryHandler(topup_cancel_callback, pattern=r"^topup_cancel_"))
-    application.add_handler(CallbackQueryHandler(admin_topup_callback, pattern=r"^adm_"))
+    application.add_handler(CallbackQueryHandler(admin_broadcast_prompt_callback, pattern=r"^adm_btn_broadcast$"))
+    application.add_handler(CallbackQueryHandler(admin_topup_user_prompt_callback, pattern=r"^adm_btn_topup_user$"))
+    application.add_handler(CallbackQueryHandler(admin_deduct_user_prompt_callback, pattern=r"^adm_btn_deduct_user$"))
+    application.add_handler(CallbackQueryHandler(admin_cancel_action_callback, pattern=r"^adm_cancel_action$"))
     application.add_handler(CallbackQueryHandler(admin_analytics_handler, pattern=r"^adm_analytics$"))
     application.add_handler(CallbackQueryHandler(admin_topusers_handler, pattern=r"^adm_topusers$"))
     application.add_handler(CallbackQueryHandler(admin_panel_handler, pattern=r"^adm_refresh_panel$"))
+    application.add_handler(CallbackQueryHandler(admin_topup_callback, pattern=r"^adm_(app_|rejc_|ignore_|assign_)"))
     application.add_handler(CallbackQueryHandler(order_button_callback, pattern=r"^btn_ord_"))
 
     # Photos (payment receipts)

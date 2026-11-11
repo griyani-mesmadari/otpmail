@@ -140,6 +140,28 @@ class Database:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Finds user by telegram username (case-insensitive, with or without @)."""
+        clean_user = username.lstrip("@").strip().lower()
+        if not clean_user:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE LOWER(username) = ?", (clean_user,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def find_user(self, identifier: Any) -> Optional[Dict[str, Any]]:
+        """Finds user by numeric user_id or telegram username."""
+        raw = str(identifier).strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            u = self.get_user(int(raw))
+            if u:
+                return u
+        return self.get_user_by_username(raw)
+
     def update_balance(self, user_id: int, amount: int, tx_type: str, description: str = "") -> int:
         """
         Updates user balance. amount can be positive or negative.
