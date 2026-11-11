@@ -16,6 +16,7 @@ class SmailProEngine:
         self.page: Optional[Page] = None
         self.lock = asyncio.Lock()
         self.is_initialized = False
+        self.keep_alive_task: Optional[asyncio.Task] = None
 
     async def initialize(self):
         """Initializes the persistent browser context and opens SmailPro."""
@@ -85,6 +86,10 @@ class SmailProEngine:
             logger.info("SmailPro session status: %s", status)
 
             self.is_initialized = True
+
+            # Start keep-alive loop to prevent session idle timeout
+            if not self.keep_alive_task or self.keep_alive_task.done():
+                self.keep_alive_task = asyncio.create_task(self._keep_alive_loop())
         except Exception as e:
             logger.error("Failed to initialize SmailProEngine: %s", e, exc_info=True)
             self.is_initialized = False
@@ -127,6 +132,23 @@ class SmailProEngine:
         except Exception as e:
             logger.error("Error checking session status: %s", e)
             return {"isLoggedIn": False, "isPremium": False, "error": str(e)}
+
+    async def _keep_alive_loop(self):
+        """Pings Smailpro every 2 hours to keep session active and avoid idle timeout."""
+        while True:
+            try:
+                await asyncio.sleep(2 * 3600)  # Ping every 2 hours
+                if self.is_initialized and self.page and not self.page.is_closed():
+                    logger.info("Running SmailPro session keep-alive ping...")
+                    async with self.lock:
+                        await self.page.evaluate('''() => {
+                            fetch('/app/create?username=random&type=real&domain=gmail.com&server=2', { method: 'HEAD' }).catch(() => {});
+                        }''')
+                        logger.info("SmailPro session keep-alive ping finished.")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("SmailPro keep-alive error: %s", e)
 
     async def create_email(self, service: str = "gmail", max_retries: int = 10) -> Dict[str, Any]:
         """

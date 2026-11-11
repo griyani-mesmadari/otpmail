@@ -42,6 +42,15 @@ async def run_login_helper():
     print(f"Membuka halaman login: {login_url}")
     await page.goto(login_url)
     
+    # Otomatis centang Remember Me agar cookies tahan bertahun-tahun
+    try:
+        await page.wait_for_selector("#remember_me", timeout=6000)
+        if not await page.is_checked("#remember_me"):
+            await page.check("#remember_me")
+            print("✅ Opsi 'Remember me' otomatis dicentang agar sesi login awet jangka panjang!")
+    except Exception:
+        pass
+
     print("\n" + "#" * 65)
     print("👉 PETUNJUK:")
     print("1. Jendela browser Chromium sudah terbuka.")
