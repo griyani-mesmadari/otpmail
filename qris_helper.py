@@ -50,22 +50,25 @@ def generate_dynamic_qris(static_qris: str, amount: int) -> str:
 
     return f"{payload_to_crc}{crc}"
 
-def generate_qris_image_bytes(static_qris: str, amount: int) -> bytes:
-    """Generates QR code PNG image bytes for Telegram send_photo."""
-    dynamic_payload = generate_dynamic_qris(static_qris, amount)
-    
+def generate_qr_image_from_payload(qr_payload: str) -> bytes:
+    """Generates QR code PNG image bytes directly from a raw QRIS string."""
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=10,
         border=2,
     )
-    qr.add_data(dynamic_payload)
+    qr.add_data(qr_payload)
     qr.make(fit=True)
 
     img = qr.make_image(fill_color="black", back_color="white")
-    
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf.getvalue()
+
+def generate_qris_image_bytes(static_qris: str, amount: int) -> bytes:
+    """Generates QR code PNG image bytes from a static QRIS template + amount."""
+    dynamic_payload = generate_dynamic_qris(static_qris, amount)
+    return generate_qr_image_from_payload(dynamic_payload)

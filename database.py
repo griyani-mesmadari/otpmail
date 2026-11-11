@@ -60,13 +60,31 @@ class Database:
                 user_id INTEGER NOT NULL,
                 amount INTEGER NOT NULL,
                 proof_file_id TEXT,
-                status TEXT DEFAULT 'pending',   -- 'pending', 'approved', 'rejected'
+                tx_id TEXT,
+                order_id TEXT,
+                qr_string TEXT,
+                checkout_url TEXT,
+                expires_at TEXT,
+                status TEXT DEFAULT 'pending',   -- 'pending', 'approved', 'rejected', 'cancelled', 'expired'
                 admin_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 reviewed_at TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             );
             """)
+
+            # Safe migration for existing topups table
+            cursor.execute("PRAGMA table_info(topups)")
+            existing_cols = {row["name"] for row in cursor.fetchall()}
+            for col_name, col_type in [
+                ("tx_id", "TEXT"),
+                ("order_id", "TEXT"),
+                ("qr_string", "TEXT"),
+                ("checkout_url", "TEXT"),
+                ("expires_at", "TEXT"),
+            ]:
+                if col_name not in existing_cols:
+                    cursor.execute(f"ALTER TABLE topups ADD COLUMN {col_name} {col_type}")
 
             # Transactions table
             cursor.execute("""
@@ -224,12 +242,25 @@ class Database:
             return [dict(r) for r in cursor.fetchall()]
 
     # ================= TOPUP METHODS =================
-    def create_topup(self, user_id: int, amount: int, proof_file_id: str) -> int:
+    def create_topup(
+        self,
+        user_id: int,
+        amount: int,
+        proof_file_id: str = "AUTOGOPAY_WAITING",
+        tx_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        qr_string: Optional[str] = None,
+        checkout_url: Optional[str] = None,
+        expires_at: Optional[str] = None,
+    ) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO topups (user_id, amount, proof_file_id, status) VALUES (?, ?, ?, 'pending')",
-                (user_id, amount, proof_file_id)
+                """
+                INSERT INTO topups (user_id, amount, proof_file_id, tx_id, order_id, qr_string, checkout_url, expires_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (user_id, amount, proof_file_id, tx_id, order_id, qr_string, checkout_url, expires_at)
             )
             conn.commit()
             return cursor.lastrowid
@@ -240,6 +271,57 @@ class Database:
             cursor.execute("SELECT * FROM topups WHERE id = ?", (topup_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+    def find_pending_topup_by_tx_id(self, tx_id: str) -> Optional[Dict[str, Any]]:
+        """Finds a pending topup matching AutoGoPay transaction_id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM topups
+                WHERE tx_id = ? AND status = 'pending'
+                ORDER BY id DESC LIMIT 1
+            """, (tx_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_active_pending_topup_by_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Returns user's latest pending topup created within last 15 minutes."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM topups
+                WHERE user_id = ? AND status = 'pending'
+                  AND tx_id IS NOT NULL
+                  AND datetime(created_at) >= datetime('now', '-15 minutes')
+                ORDER BY id DESC LIMIT 1
+            """, (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_pending_autogopay_topups(self) -> List[Dict[str, Any]]:
+        """Returns all active pending AutoGoPay topups (created within last 16 minutes) to resume polling."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM topups
+                WHERE status = 'pending'
+                  AND tx_id IS NOT NULL
+                  AND datetime(created_at) >= datetime('now', '-16 minutes')
+                ORDER BY id DESC
+            """)
+            return [dict(r) for r in cursor.fetchall()]
+
+    def cancel_topup(self, topup_id: int, new_status: str = "cancelled") -> bool:
+        """Marks a pending topup as cancelled or expired."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE topups
+                SET status = ?, reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+            """, (new_status, topup_id))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def approve_topup(self, topup_id: int, admin_id: int = 0, description: Optional[str] = None) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -255,13 +337,16 @@ class Database:
             cursor.execute("""
                 UPDATE topups
                 SET status = 'approved', admin_id = ?, reviewed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = 'pending'
             """, (admin_id, topup_id))
+
+            if cursor.rowcount == 0:
+                return None
 
             conn.commit()
 
         # Update balance through update_balance method to record transaction
-        desc = description or (f"Top Up via Admin (Topup ID #{topup_id})" if admin_id else f"Top Up Otomatis QRIS Hook (Topup ID #{topup_id})")
+        desc = description or (f"Top Up via Admin (Topup ID #{topup_id})" if admin_id else f"Top Up Otomatis QRIS AutoGoPay (Topup ID #{topup_id})")
         new_balance = self.update_balance(
             user_id=user_id,
             amount=amount,

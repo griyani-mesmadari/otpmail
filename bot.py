@@ -34,7 +34,8 @@ from telegram.ext import (
 import config
 from database import db
 from smailpro_engine import smailpro
-from qris_helper import generate_qris_image_bytes
+from qris_helper import generate_qris_image_bytes, generate_qr_image_from_payload
+from autogopay_client import autogopay
 
 # Logging Configuration
 logging.basicConfig(
@@ -45,8 +46,14 @@ logger = logging.getLogger(__name__)
 
 # State tracking for topup dialogs: {user_id: {"step": "waiting_amount" | "waiting_proof", "amount": int}}
 user_topup_states: Dict[int, dict] = {}
-# Background auto-poll tracking: {order_id: asyncio.Task}
+# Background auto-poll tracking for OTP: {order_id: asyncio.Task}
 active_polling_tasks: Dict[int, asyncio.Task] = {}
+# Background auto-poll tracking for Topup QRIS: {topup_id: asyncio.Task}
+active_topup_polling_tasks: Dict[int, asyncio.Task] = {}
+# Active QRIS photo message map: {topup_id: (chat_id, message_id)}
+active_topup_messages: Dict[int, tuple] = {}
+# Simple per-user rate limit tracking: {user_id: [timestamp, ...]}
+user_qris_rate_limit: Dict[int, list] = {}
 # Global bot instance for Webhook callbacks
 telegram_bot: Optional[Bot] = None
 
@@ -580,66 +587,431 @@ async def topup_amount_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await show_payment_instructions(query.message, user_id, amount)
 
 
+async def _process_approved_topup(topup_id: int, source_label: str = "AutoGoPay GoPay QRIS") -> Optional[dict]:
+    """Atomically approves topup, cleans up QR message, and notifies user & admins."""
+    approval_res = db.approve_topup(
+        topup_id=topup_id,
+        admin_id=0,
+        description=f"Top Up Otomatis {source_label} (Topup #{topup_id})"
+    )
+    if not approval_res:
+        return None
+
+    user_id = approval_res["user_id"]
+    amount = approval_res["amount"]
+    new_balance = approval_res["new_balance"]
+
+    # Clear topup dialog state if matching
+    if user_topup_states.get(user_id, {}).get("topup_id") == topup_id:
+        user_topup_states.pop(user_id, None)
+
+    # Stop background polling task if not executing inside it
+    task = active_topup_polling_tasks.pop(topup_id, None)
+    if task and not task.done():
+        try:
+            current = asyncio.current_task()
+            if current is not task:
+                task.cancel()
+        except RuntimeError:
+            pass
+
+    # Delete previous QRIS photo message so chat stays clean
+    msg_loc = active_topup_messages.pop(topup_id, None)
+    if msg_loc and telegram_bot:
+        try:
+            await telegram_bot.delete_message(chat_id=msg_loc[0], message_id=msg_loc[1])
+        except Exception:
+            pass
+
+    logger.info("SUCCESS: Topup #%s approved via %s! User %s new balance: Rp %s", topup_id, source_label, user_id, new_balance)
+
+    if telegram_bot:
+        try:
+            user_text = (
+                f"🎉 <b>PEMBAYARAN QRIS BERHASIL DITERIMA!</b>\n\n"
+                f"✅ Saldo sebesar <b>Rp {amount:,}</b> telah berhasil masuk ke akun Anda secara otomatis!\n\n"
+                f"💳 <b>Saldo Baru:</b> <code>Rp {new_balance:,}</code>\n"
+                f"🆔 <b>ID Tagihan:</b> <code>#{topup_id}</code>\n"
+                f"⏱️ <b>Waktu:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"Terima kasih! Sekarang Anda sudah bisa langsung memesan email OTP."
+            )
+            await telegram_bot.send_message(
+                chat_id=user_id,
+                text=user_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_keyboard(user_id in config.ADMIN_IDS)
+            )
+        except Exception as err:
+            logger.error("Failed to notify user %s of auto topup approval: %s", user_id, err)
+
+        for admin_id in config.ADMIN_IDS:
+            try:
+                admin_text = (
+                    f"⚡ <b>[AUTOGOPAY OTOMATIS] TOP UP MASUK &amp; LUNAS!</b>\n\n"
+                    f"🆔 <b>ID Tagihan:</b> <code>#{topup_id}</code>\n"
+                    f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+                    f"💰 <b>Nominal:</b> <b>Rp {amount:,}</b>\n"
+                    f"💳 <b>Saldo Baru User:</b> Rp {new_balance:,}\n"
+                    f"🏦 <b>Sumber:</b> {source_label}\n"
+                    f"⏱️ <b>Status:</b> Auto-Approved"
+                )
+                await telegram_bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as err:
+                logger.error("Failed to notify admin %s of auto topup: %s", admin_id, err)
+
+    return approval_res
+
+
+def start_topup_polling(topup_id: int, tx_id: str, user_id: int, amount: int):
+    """Starts an async background poller using AutoGoPay /qris/status for up to 15.5 minutes."""
+    existing_task = active_topup_polling_tasks.get(topup_id)
+    if existing_task and not existing_task.done():
+        return
+
+    async def _poll_loop():
+        import time
+        start_ts = time.monotonic()
+        max_duration = 930  # 15.5 minutes
+        logger.info("Started AutoGoPay auto-poll for Topup #%s (tx_id=%s, Rp %s)", topup_id, tx_id, amount)
+
+        try:
+            while (time.monotonic() - start_ts) < max_duration:
+                elapsed = time.monotonic() - start_ts
+                interval = 5 if elapsed < 180 else (8 if elapsed < 420 else 12)
+                await asyncio.sleep(interval)
+
+                # Stop if DB record is no longer pending
+                topup = db.get_topup(topup_id)
+                if not topup or topup["status"] != "pending":
+                    logger.info("Stopping poll for Topup #%s (status=%s)", topup_id, topup.get("status") if topup else "missing")
+                    return
+
+                status_res = await autogopay.check_status(tx_id)
+                if status_res.get("is_paid"):
+                    await _process_approved_topup(topup_id, source_label="AutoGoPay GoPay QRIS")
+                    return
+
+                if status_res.get("is_expired_or_cancelled"):
+                    tx_st = status_res.get("transaction_status", "expire")
+                    if db.cancel_topup(topup_id, new_status=tx_st):
+                        msg_loc = active_topup_messages.pop(topup_id, None)
+                        if msg_loc and telegram_bot:
+                            try:
+                                await telegram_bot.delete_message(chat_id=msg_loc[0], message_id=msg_loc[1])
+                            except Exception:
+                                pass
+                        if telegram_bot:
+                            try:
+                                exp_msg = await telegram_bot.send_message(
+                                    chat_id=user_id,
+                                    text=f"⏱️ <b>Tagihan Top Up #{topup_id} (Rp {amount:,}) telah kedaluwarsa / dibatalkan.</b>\nSilakan buat permintaan top up baru jika masih ingin mengisi saldo.",
+                                    parse_mode=ParseMode.HTML
+                                )
+                                schedule_delete(exp_msg, delay=12)
+                            except Exception:
+                                pass
+                    return
+
+            # Loop ended (timeout after ~15.5 minutes)
+            topup = db.get_topup(topup_id)
+            if topup and topup["status"] == "pending":
+                if db.cancel_topup(topup_id, new_status="expired"):
+                    msg_loc = active_topup_messages.pop(topup_id, None)
+                    if msg_loc and telegram_bot:
+                        try:
+                            await telegram_bot.delete_message(chat_id=msg_loc[0], message_id=msg_loc[1])
+                        except Exception:
+                            pass
+                    if telegram_bot:
+                        try:
+                            exp_msg = await telegram_bot.send_message(
+                                chat_id=user_id,
+                                text=f"⏱️ <b>Waktu pembayaran QRIS Top Up #{topup_id} (Rp {amount:,}) sudah habis (15 menit).</b>\nSilakan klik /topup untuk membuat QRIS baru.",
+                                parse_mode=ParseMode.HTML
+                            )
+                            schedule_delete(exp_msg, delay=15)
+                        except Exception:
+                            pass
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error("Error in topup poll loop #%s: %s", topup_id, e)
+        finally:
+            active_topup_polling_tasks.pop(topup_id, None)
+
+    active_topup_polling_tasks[topup_id] = asyncio.create_task(_poll_loop())
+
+
 async def show_payment_instructions(message_target, user_id: int, base_amount: int):
-    """Generates dynamic QRIS image with 3-digit unique code, registers pending topup, and displays payment details."""
-    import random
+    """Generates (or reuses active) dynamic GoPay QRIS via AutoGoPay API v1 and starts automatic payment detection."""
+    import time
 
     if base_amount < config.MIN_TOPUP:
         base_amount = config.MIN_TOPUP
+    if base_amount > 10_000_000:
+        err_msg = await message_target.reply_text("❌ Maksimal nominal top up dalam 1 transaksi adalah Rp 10.000.000.")
+        schedule_delete(err_msg, delay=10)
+        return
 
-    # Round base to thousands and generate 3-digit unique code (101 - 999)
-    base_thousands = (base_amount // 1000) * 1000
+    amount = int(base_amount)
 
-    # Ensure unique_code does not collide with any currently pending topup amount
-    pending_amounts = db.get_pending_topup_amounts()
-    attempts = 0
-    unique_code = random.randint(101, 999)
-    final_amount = base_thousands + unique_code
-    while final_amount in pending_amounts and attempts < 100:
-        unique_code = random.randint(101, 999)
-        final_amount = base_thousands + unique_code
-        attempts += 1
+    if not autogopay.is_configured:
+        err_msg = await message_target.reply_text(
+            "❌ Sistem pembayaran otomatis AutoGoPay belum dikonfigurasi (`AUTOGOPAY_API_KEY` kosong). Silakan hubungi Admin."
+        )
+        schedule_delete(err_msg, delay=15)
+        return
 
-    # Immediately register topup as pending in database for QRIS Hook automatic detection
-    topup_id = db.create_topup(user_id=user_id, amount=final_amount, proof_file_id="QRIS_AUTO_WAITING")
+    # Anti-spam check: reuse active pending topup if amount is identical, or cancel old one if different
+    existing = db.get_active_pending_topup_by_user(user_id)
+    topup_id = None
+    tx_id = None
+    qr_string = None
+    qr_url = None
+    checkout_url = None
+    expiry_time = "15 Menit"
+
+    if existing and existing.get("tx_id") and existing.get("qr_string"):
+        if int(existing["amount"]) == amount:
+            # Rule 1 AutoGoPay: 1 transaction, 1 QRIS -> reuse active QRIS
+            topup_id = existing["id"]
+            tx_id = existing["tx_id"]
+            qr_string = existing["qr_string"]
+            checkout_url = existing.get("checkout_url")
+            expiry_time = existing.get("expires_at") or "15 Menit"
+            logger.info("Reusing active pending AutoGoPay QRIS Topup #%s for user %s (Rp %s)", topup_id, user_id, amount)
+        else:
+            # User chose a different amount -> cancel old QRIS cleanly first
+            old_id = existing["id"]
+            old_tx = existing["tx_id"]
+            try:
+                await autogopay.cancel_qris(old_tx)
+            except Exception:
+                pass
+            db.cancel_topup(old_id, new_status="cancelled")
+            old_task = active_topup_polling_tasks.pop(old_id, None)
+            if old_task and not old_task.done():
+                old_task.cancel()
+            old_msg = active_topup_messages.pop(old_id, None)
+            if old_msg and telegram_bot:
+                try:
+                    await telegram_bot.delete_message(chat_id=old_msg[0], message_id=old_msg[1])
+                except Exception:
+                    pass
+
+    if not topup_id:
+        # Per-user anti-spam rate limit (max 4 new QRIS generations per 5 minutes)
+        now = time.time()
+        history = [t for t in user_qris_rate_limit.get(user_id, []) if now - t < 300]
+        if len(history) >= 4:
+            warn_msg = await message_target.reply_text(
+                "⏳ <b>Terlalu banyak permintaan QRIS dalam waktu singkat.</b>\n"
+                "Mohon tunggu 1-2 menit sebelum membuat tagihan baru agar sistem tetap stabil.",
+                parse_mode=ParseMode.HTML
+            )
+            schedule_delete(warn_msg, delay=12)
+            return
+
+        gen = await autogopay.generate_qris(amount)
+        if not gen.get("success"):
+            err_detail = gen.get("error", "Gateway AutoGoPay sedang gangguan")
+            err_msg = await message_target.reply_text(
+                f"❌ <b>Gagal Membuat QRIS Pembayaran!</b>\n\nDetail: <code>{err_detail}</code>\nSilakan coba lagi sebentar atau hubungi Admin.",
+                parse_mode=ParseMode.HTML
+            )
+            schedule_delete(err_msg, delay=15)
+            return
+
+        history.append(now)
+        user_qris_rate_limit[user_id] = history
+
+        data = gen["data"]
+        tx_id = data.get("transaction_id")
+        order_id = data.get("order_id")
+        qr_string = data.get("qr_string", "")
+        qr_url = data.get("qr_url", "")
+        checkout_url = data.get("checkout_url", "")
+        expiry_time = data.get("expiry_time", "15 Menit")
+
+        topup_id = db.create_topup(
+            user_id=user_id,
+            amount=amount,
+            proof_file_id=f"AUTOGOPAY:{tx_id}",
+            tx_id=tx_id,
+            order_id=order_id,
+            qr_string=qr_string,
+            checkout_url=checkout_url,
+            expires_at=expiry_time,
+        )
 
     user_topup_states[user_id] = {
         "step": "waiting_proof",
         "topup_id": topup_id,
-        "base_amount": base_thousands,
-        "unique_code": unique_code,
-        "amount": final_amount
+        "tx_id": tx_id,
+        "amount": amount,
     }
+
+    exp_display = expiry_time[-8:-3] + " WIB" if isinstance(expiry_time, str) and len(expiry_time) >= 16 else expiry_time
 
     caption = (
         f"💳 <b>PEMBAYARAN TOP UP VIA QRIS OTOMATIS</b>\n\n"
-        f"💰 <b>Total Transfer:</b> <code>Rp {final_amount:,}</code>\n"
-        f"🔢 <b>Nominal Pokok:</b> Rp {base_thousands:,}\n"
-        f"🎯 <b>Kode Unik:</b> <code>+{unique_code}</code> <i>(Pembeda mutasi otomatis Anda)</i>\n"
-        f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n\n"
+        f"💰 <b>Total Transfer:</b> <code>Rp {amount:,}</code>\n"
+        f"🆔 <b>ID Tagihan:</b> <code>#{topup_id}</code>\n"
+        f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n"
+        f"⏱️ <b>Berlaku s/d:</b> {exp_display} (15 Menit)\n\n"
         f"📱 <b>Cara Pembayaran:</b>\n"
-        f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (DANA, GoPay, OVO, ShopeePay).\n"
-        f"2. Scan / upload gambar QR Code di atas.\n"
-        f"3. Pastikan nominal tertera tepat <b>Rp {final_amount:,}</b> lalu selesaikan pembayaran.\n"
-        f"4. <i>Selesai! Sistem akan otomatis mendeteksi mutasi dan saldo langsung masuk.</i>"
+        f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (GoPay, DANA, OVO, ShopeePay).\n"
+        f"2. Scan QR Code di atas lalu selesaikan pembayaran tepat <b>Rp {amount:,}</b>.\n"
+        f"3. <i>Saldo akan MASUK OTOMATIS dalam beberapa detik setelah transfer berhasil!</i>"
     )
 
+    buttons = [
+        [InlineKeyboardButton("🔄 Cek Status Pembayaran", callback_data=f"topup_check_{topup_id}")],
+    ]
+    if checkout_url:
+        buttons.append([InlineKeyboardButton("🌐 Buka Link Pembayaran Web", url=checkout_url)])
+    buttons.append([InlineKeyboardButton("❌ Batalkan Top Up", callback_data=f"topup_cancel_{topup_id}")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+
+    # Delete previous QR message if re-displayed so user only sees 1 clean QR
+    prev_msg = active_topup_messages.pop(topup_id, None)
+    if prev_msg and telegram_bot:
+        try:
+            await telegram_bot.delete_message(chat_id=prev_msg[0], message_id=prev_msg[1])
+        except Exception:
+            pass
+
     try:
-        # Generate dynamic QRIS PNG in memory with final_amount
-        qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, final_amount)
-        photo_file = io.BytesIO(qr_bytes)
-        photo_file.name = "qris.png"
+        if qr_string:
+            qr_bytes = generate_qr_image_from_payload(qr_string)
+            photo_payload = io.BytesIO(qr_bytes)
+            photo_payload.name = "qris.png"
+        elif qr_url:
+            photo_payload = qr_url
+        else:
+            qr_bytes = generate_qris_image_bytes(config.STATIC_QRIS, amount)
+            photo_payload = io.BytesIO(qr_bytes)
+            photo_payload.name = "qris.png"
+
         qr_msg = await message_target.reply_photo(
-            photo=photo_file,
+            photo=photo_payload,
             caption=caption,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
         )
-        schedule_delete(qr_msg, delay=300)
+        active_topup_messages[topup_id] = (qr_msg.chat_id, qr_msg.message_id)
     except Exception as e:
         logger.error("Failed to generate/send QRIS photo: %s", e)
-        # Fallback to text if image generation encounters issue
-        fallback_msg = await message_target.reply_text(caption, parse_mode=ParseMode.HTML)
-        schedule_delete(fallback_msg, delay=300)
+        qr_msg = await message_target.reply_text(
+            caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+        )
+        active_topup_messages[topup_id] = (qr_msg.chat_id, qr_msg.message_id)
+
+    # Start active background polling using AutoGoPay /qris/status
+    if tx_id:
+        start_topup_polling(topup_id, tx_id, user_id, amount)
+
+
+async def topup_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual check status button right under the QRIS image."""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    try:
+        topup_id = int(query.data.replace("topup_check_", ""))
+    except Exception:
+        await query.answer("ID tagihan tidak valid.", show_alert=True)
+        return
+
+    topup = db.get_topup(topup_id)
+    if not topup or topup["user_id"] != user_id:
+        await query.answer("Tagihan tidak ditemukan.", show_alert=True)
+        return
+
+    if topup["status"] == "approved":
+        await query.answer("✅ Pembayaran sudah diterima & saldo sudah masuk!", show_alert=True)
+        return
+
+    if topup["status"] != "pending":
+        await query.answer(f"❌ Tagihan ini berstatus: {topup['status']}.", show_alert=True)
+        return
+
+    tx_id = topup.get("tx_id")
+    if not tx_id:
+        await query.answer("⏳ Sedang menunggu verifikasi otomatis/admin...", show_alert=True)
+        return
+
+    status_res = await autogopay.check_status(tx_id)
+    if status_res.get("is_paid"):
+        await query.answer("🎉 Pembayaran diterima! Memproses saldo...", show_alert=False)
+        await _process_approved_topup(topup_id, source_label="AutoGoPay (Cek Instan)")
+    elif status_res.get("is_expired_or_cancelled"):
+        tx_st = status_res.get("transaction_status", "expire")
+        db.cancel_topup(topup_id, new_status=tx_st)
+        active_topup_messages.pop(topup_id, None)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.answer("⏱️ Tagihan sudah kedaluwarsa atau dibatalkan. Silakan buat tagihan baru.", show_alert=True)
+    else:
+        await query.answer(
+            "⏳ Pembayaran belum terdeteksi masuk.\nJika Anda baru saja transfer, tunggu 5-10 detik atau tekan tombol ini lagi.",
+            show_alert=True
+        )
+
+
+async def topup_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows user to cancel an active pending QRIS topup cleanly."""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    try:
+        topup_id = int(query.data.replace("topup_cancel_", ""))
+    except Exception:
+        await query.answer("ID tagihan tidak valid.", show_alert=True)
+        return
+
+    topup = db.get_topup(topup_id)
+    if not topup or topup["user_id"] != user_id:
+        await query.answer("Tagihan tidak ditemukan.", show_alert=True)
+        return
+
+    if topup["status"] != "pending":
+        await query.answer(f"Tagihan tidak bisa dibatalkan (status: {topup['status']}).", show_alert=True)
+        return
+
+    tx_id = topup.get("tx_id")
+    if tx_id:
+        try:
+            await autogopay.cancel_qris(tx_id)
+        except Exception:
+            pass
+
+    db.cancel_topup(topup_id, new_status="cancelled")
+    task = active_topup_polling_tasks.pop(topup_id, None)
+    if task and not task.done():
+        task.cancel()
+    active_topup_messages.pop(topup_id, None)
+    if user_topup_states.get(user_id, {}).get("topup_id") == topup_id:
+        user_topup_states.pop(user_id, None)
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    await query.answer("❌ Top Up berhasil dibatalkan.", show_alert=False)
+    info = await context.bot.send_message(
+        chat_id=user_id,
+        text=f"❌ <b>Tagihan Top Up #{topup_id} telah dibatalkan.</b>",
+        parse_mode=ParseMode.HTML
+    )
+    schedule_delete(info, delay=8)
 
 
 # ================= RECEIVE PROOF OF TRANSFER =================
@@ -659,17 +1031,24 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
     photo = update.message.photo[-1]  # Highest resolution photo
     file_id = photo.file_id
 
-    # Check if this topup was already auto-approved by QRIS Hook
+    # Check if this topup was already auto-approved or settled on AutoGoPay
     if topup_id:
         existing = db.get_topup(topup_id)
         if existing and existing.get("status") == "approved":
-            del user_topup_states[user_id]
+            user_topup_states.pop(user_id, None)
             await update.message.reply_text(
                 f"🎉 <b>Pembayaran Anda sebesar Rp {amount:,} sudah otomatis masuk beberapa saat yang lalu!</b>\n\n"
                 f"Saldo sudah aktif di akun Anda. Anda bisa langsung memesan email OTP.",
                 parse_mode=ParseMode.HTML
             )
             return
+
+        if existing and existing.get("tx_id") and autogopay.is_configured:
+            status_res = await autogopay.check_status(existing["tx_id"])
+            if status_res.get("is_paid"):
+                await _process_approved_topup(topup_id, source_label="AutoGoPay (Cek Bukti Instan)")
+                return
+
         # Update existing record with photo proof
         db.update_topup_proof(topup_id, file_id)
     else:
@@ -677,13 +1056,13 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
         topup_id = db.create_topup(user_id=user_id, amount=amount, proof_file_id=file_id)
 
     # Clear user state
-    del user_topup_states[user_id]
+    user_topup_states.pop(user_id, None)
 
     await update.message.reply_text(
         f"✅ <b>Bukti transfer berhasil diterima!</b>\n\n"
         f"🆔 ID Top Up: <code>#{topup_id}</code>\n"
-        f"💰 Nominal Transfer: <code>Rp {amount:,}</code> (Kode Unik: {unique_code})\n\n"
-        f"Permohonan top up Anda sedang ditinjau oleh Admin. Anda akan menerima notifikasi otomatis begitu saldo disetujui.",
+        f"💰 Nominal Transfer: <code>Rp {amount:,}</code>\n\n"
+        f"Permohonan top up Anda sedang ditinjau oleh Admin / diverifikasi otomatis. Anda akan menerima notifikasi begitu saldo disetujui.",
         parse_mode=ParseMode.HTML
     )
 
@@ -1021,9 +1400,9 @@ async def tarif_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Saldo Anda <b>HANYA DIPOTONG</b> saat email / kode OTP berhasil masuk ke inbox. Jika OTP tidak masuk atau order dibatalkan, saldo Anda <b>Rp 0 (TIDAK DIPOTONG)</b>!\n\n"
         f"💳 <b>Ketentuan Top Up Saldo:</b>\n"
         f"• Minimal Top Up: <b>Rp {config.MIN_TOPUP:,}</b>\n"
-        f"• Metode Pembayaran: <b>QRIS Otomatis Dinamis</b>\n"
-        f"• Mendukung Semua Bank & E-Wallet: BCA, Mandiri, BRI, BNI, Jago, DANA, GoPay, OVO, ShopeePay\n"
-        f"• <b>Kode Unik 3 Digit:</b> Otomatis ditambahkan di belakang nominal agar mutasi Anda langsung diverifikasi cepat oleh Admin.\n\n"
+        f"• Metode Pembayaran: <b>QRIS Otomatis Real-Time</b>\n"
+        f"• Mendukung Semua Bank &amp; E-Wallet: BCA, Mandiri, BRI, BNI, Jago, DANA, GoPay, OVO, ShopeePay\n"
+        f"• <b>Verifikasi Otomatis:</b> Saldo langsung masuk otomatis hitungan detik setelah pembayaran berhasil.\n\n"
         f"⏱️ <i>Pesan ini otomatis dihapus dalam 15 detik.</i>"
     )
 
@@ -1356,10 +1735,57 @@ async def health_check(request):
 
 async def qris_webhook_handler(request: web.Request):
     """
-    Receives incoming QRIS payment notifications forwarded by QRIS Hook Android App (suriyadi15/qrishook).
-    Automatically matches payment amount with pending topups, approves topup, and credits user balance instantly.
+    Receives incoming payment notifications from AutoGoPay Webhook (and legacy QRISHook fallback).
+    Automatically approves matching pending topups atomically and notifies user & admins.
     """
-    # 1. Verify Secret if configured
+    import json
+    raw_body = await request.read()
+
+    # Check AutoGoPay X-Signature verification if header is present
+    x_signature = request.headers.get("X-Signature")
+    if x_signature and autogopay.is_configured:
+        if not autogopay.verify_signature(raw_body, x_signature):
+            logger.warning("AutoGoPay webhook unauthorized request (X-Signature mismatch)")
+            return web.json_response({"error": "Invalid signature"}, status=401)
+
+    # Parse JSON payload
+    try:
+        data = json.loads(raw_body.decode("utf-8"))
+    except Exception as e:
+        logger.error("Failed to parse webhook JSON: %s", e)
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    logger.info("Received payment webhook event: %s", data)
+
+    # ---- CASE A: AutoGoPay Official Webhook Format ----
+    if isinstance(data, dict) and (data.get("event") == "transaction.received" or isinstance(data.get("transaction"), dict)):
+        tx = data.get("transaction") or {}
+        tx_id = str(tx.get("transaction_id") or "").strip()
+        tx_status = str(tx.get("status") or "").strip().upper()
+        pay_method = tx.get("payment_method") or "QRIS"
+        try:
+            amount = int(float(tx.get("amount", 0)))
+        except Exception:
+            amount = 0
+
+        if tx_status in ("PAID", "SETTLEMENT", "SUCCESS", "CAPTURE"):
+            topup = db.find_pending_topup_by_tx_id(tx_id) if tx_id else None
+            if not topup and amount > 0:
+                topup = db.find_pending_topup_by_amount(amount)
+
+            if topup:
+                await _process_approved_topup(
+                    topup["id"],
+                    source_label=f"AutoGoPay {pay_method} (Webhook)"
+                )
+                return web.json_response({"success": True, "status": "approved", "topup_id": topup["id"]}, status=200)
+            else:
+                logger.info("AutoGoPay webhook received for tx_id=%s amount=%s, no pending topup matched (may already be approved).", tx_id, amount)
+                return web.json_response({"success": True, "message": "Acknowledged"}, status=200)
+
+        return web.json_response({"success": True, "message": f"Event acknowledged (status={tx_status})"}, status=200)
+
+    # ---- CASE B: Legacy QRIS Hook Format (Fallback) ----
     if config.QRISHOOK_SECRET:
         req_secret = (
             request.headers.get("X-Webhook-Secret") or
@@ -1368,15 +1794,6 @@ async def qris_webhook_handler(request: web.Request):
         if not req_secret or req_secret != config.QRISHOOK_SECRET:
             logger.warning("QRISHook unauthorized request received (secret mismatch)")
             return web.json_response({"error": "Unauthorized: secret mismatch"}, status=401)
-
-    # 2. Parse JSON payload
-    try:
-        data = await request.json()
-    except Exception as e:
-        logger.error("Failed to parse JSON from QRISHook: %s", e)
-        return web.json_response({"error": "Invalid JSON"}, status=400)
-
-    logger.info("Received QRISHook event: %s", data)
 
     # 3. Extract amount, sender_name, and source
     raw_amount = None
@@ -1634,6 +2051,17 @@ async def post_init(application: Application):
     except Exception as e:
         logger.error("Failed to start SmailPro engine on boot: %s", e)
 
+    # Resume AutoGoPay polling for any pending topups created before restart
+    if autogopay.is_configured:
+        try:
+            pending_topups = db.get_all_pending_autogopay_topups()
+            for t in pending_topups:
+                start_topup_polling(t["id"], t["tx_id"], t["user_id"], t["amount"])
+            if pending_topups:
+                logger.info("Resumed AutoGoPay polling for %d pending topup(s)", len(pending_topups))
+        except Exception as e:
+            logger.error("Failed resuming pending AutoGoPay polls: %s", e)
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Logs errors caused by Updates."""
@@ -1685,6 +2113,8 @@ def main():
     application.add_handler(CallbackQueryHandler(topup_menu_handler, pattern=r"^btn_topup$"))
     application.add_handler(CallbackQueryHandler(history_handler, pattern=r"^btn_history$"))
     application.add_handler(CallbackQueryHandler(topup_amount_callback, pattern=r"^topup_amt_"))
+    application.add_handler(CallbackQueryHandler(topup_check_callback, pattern=r"^topup_check_"))
+    application.add_handler(CallbackQueryHandler(topup_cancel_callback, pattern=r"^topup_cancel_"))
     application.add_handler(CallbackQueryHandler(admin_topup_callback, pattern=r"^adm_"))
     application.add_handler(CallbackQueryHandler(admin_analytics_handler, pattern=r"^adm_analytics$"))
     application.add_handler(CallbackQueryHandler(admin_topusers_handler, pattern=r"^adm_topusers$"))

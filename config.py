@@ -55,3 +55,7 @@ ORDER_EXPIRE_MINUTES = int(os.getenv("ORDER_EXPIRE_MINUTES", "20"))
 
 # QRIS Hook Webhook Secret (optional, configured in QRIS Hook Android app)
 QRISHOOK_SECRET = os.getenv("QRISHOOK_SECRET", "").strip()
+
+# AutoGoPay API v1 Gateway Settings
+AUTOGOPAY_BASE_URL = os.getenv("AUTOGOPAY_BASE_URL", "https://v1-gateway.autogopay.site").strip().rstrip("/")
+AUTOGOPAY_API_KEY = os.getenv("AUTOGOPAY_API_KEY", "").strip()
