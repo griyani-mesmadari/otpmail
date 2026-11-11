@@ -767,8 +767,9 @@ def start_topup_polling(topup_id: int, tx_id: str, user_id: int, amount: int):
 
 
 async def show_payment_instructions(message_target, user_id: int, base_amount: int):
-    """Generates (or reuses active) dynamic GoPay QRIS via AutoGoPay API v1 and starts automatic payment detection."""
+    """Generates (or reuses active) dynamic GoPay QRIS via AutoGoPay API v1 with 3-digit unique code."""
     import time
+    import random
 
     if base_amount < config.MIN_TOPUP:
         base_amount = config.MIN_TOPUP
@@ -777,7 +778,19 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
         schedule_delete(err_msg, delay=10)
         return
 
-    amount = int(base_amount)
+    # Hitung nominal pokok (ribuan) & buat 3 digit kode unik (101 - 999)
+    base_thousands = (base_amount // 1000) * 1000
+    pending_amounts = db.get_pending_topup_amounts()
+    attempts = 0
+    unique_code = random.randint(101, 999)
+    final_amount = base_thousands + unique_code
+    while final_amount in pending_amounts and attempts < 100:
+        unique_code = random.randint(101, 999)
+        final_amount = base_thousands + unique_code
+        attempts += 1
+
+    amount = final_amount
+    used_unique_code = unique_code
 
     if not autogopay.is_configured:
         err_msg = await message_target.reply_text(
@@ -786,7 +799,7 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
         schedule_delete(err_msg, delay=15)
         return
 
-    # Anti-spam check: reuse active pending topup if amount is identical, or cancel old one if different
+    # Anti-spam check: reuse active pending topup if nominal pokok is identical, or cancel old one if different
     existing = db.get_active_pending_topup_by_user(user_id)
     topup_id = None
     tx_id = None
@@ -796,14 +809,17 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
     expiry_time = "15 Menit"
 
     if existing and existing.get("tx_id") and existing.get("qr_string"):
-        if int(existing["amount"]) == amount:
-            # Rule 1 AutoGoPay: 1 transaction, 1 QRIS -> reuse active QRIS
+        existing_amount = int(existing["amount"])
+        if (existing_amount // 1000) * 1000 == base_thousands:
+            # Rule 1 AutoGoPay: 1 transaction, 1 QRIS -> reuse active QRIS with same base amount
             topup_id = existing["id"]
             tx_id = existing["tx_id"]
             qr_string = existing["qr_string"]
             checkout_url = existing.get("checkout_url")
             expiry_time = existing.get("expires_at") or "15 Menit"
-            logger.info("Reusing active pending AutoGoPay QRIS Topup #%s for user %s (Rp %s)", topup_id, user_id, amount)
+            amount = existing_amount
+            used_unique_code = existing_amount % 1000
+            logger.info("Reusing active pending AutoGoPay QRIS Topup #%s for user %s (Rp %s, unique +%s)", topup_id, user_id, amount, used_unique_code)
         else:
             # User chose a different amount -> cancel old QRIS cleanly first
             old_id = existing["id"]
@@ -872,6 +888,8 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
         "step": "waiting_proof",
         "topup_id": topup_id,
         "tx_id": tx_id,
+        "base_amount": base_thousands,
+        "unique_code": used_unique_code,
         "amount": amount,
     }
 
@@ -880,13 +898,15 @@ async def show_payment_instructions(message_target, user_id: int, base_amount: i
     caption = (
         f"💳 <b>PEMBAYARAN TOP UP VIA QRIS OTOMATIS</b>\n\n"
         f"💰 <b>Total Transfer:</b> <code>Rp {amount:,}</code>\n"
+        f"🔢 <b>Nominal Pokok:</b> Rp {base_thousands:,}\n"
+        f"🎯 <b>Kode Unik:</b> <code>+{used_unique_code}</code> <i>(Pembeda mutasi otomatis Anda)</i>\n"
         f"🆔 <b>ID Tagihan:</b> <code>#{topup_id}</code>\n"
         f"🏷️ <b>Merchant:</b> PT SERVER HANDAL, SUKOLIL\n"
         f"⏱️ <b>Berlaku s/d:</b> {exp_display} (15 Menit)\n\n"
         f"📱 <b>Cara Pembayaran:</b>\n"
         f"1. Buka aplikasi m-Banking (BCA, Mandiri, BRI, BNI, Jago, dll) atau E-Wallet (GoPay, DANA, OVO, ShopeePay).\n"
         f"2. Scan QR Code di atas lalu selesaikan pembayaran tepat <b>Rp {amount:,}</b>.\n"
-        f"3. <i>Saldo akan MASUK OTOMATIS dalam beberapa detik setelah transfer berhasil!</i>"
+        f"3. <i>Saldo sebesar <b>Rp {amount:,}</b> akan MASUK OTOMATIS penuh ke akun Anda tanpa potongan!</i>"
     )
 
     buttons = [
